@@ -54,6 +54,9 @@ on exit with `Parameter "singleton" is null`. The next import rebuilds the cache
 
 ## Run the build
 
+The source build includes the agent bridge (`modules/gai_agent/`). The
+downloaded engine does not.
+
 The binary lands in `bin/`:
 
 ```text

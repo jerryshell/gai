@@ -9,10 +9,14 @@ import json
 import os
 import platform
 import re
+import secrets
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from datetime import date
@@ -26,6 +30,8 @@ LOG_DIR = GAI_DIR / "logs"
 UPSTREAM_FILE = GAI_DIR / "upstream.json"
 FEATURES_DIR = GAI_DIR / "features"
 VERSION_FILE = GAI_DIR / "version"
+AGENT_STATE = GAI_DIR / "agent.json"
+AGENT_LOG = GAI_DIR / "agent.log"
 
 WORKSPACE_PREFIXES = (".agents/", ".gai/", ".github/", "bin/", "docs/gai/", "game/")
 WORKSPACE_FILES = (
@@ -33,6 +39,7 @@ WORKSPACE_FILES = (
     "AGENTS.md",
     "NOTICE.md",
     "README.md",
+    "tests/test_agent.py",
     "tests/test_check.py",
     "tests/test_upstream.py",
 )
@@ -437,9 +444,20 @@ def cmd_check(args) -> int:
             )
             text = result.stdout or ""
             output.append(text)
-            if result.returncode != 0:
+            errors = collect_errors(text)
+            # The headless editor can abort at shutdown after the import. The run step still checks the assets.
+            shutdown_crash = (
+                name == "import"
+                and result.returncode != 0
+                and bool(errors)
+                and all('singleton" is null' in error for error in errors)
+            )
+            if result.returncode != 0 and not shutdown_crash:
                 failures.append(f"{name}: engine exited with code {result.returncode}")
-            failures.extend(collect_errors(text))
+            for error in errors:
+                if shutdown_crash and 'singleton" is null' in error:
+                    continue
+                failures.append(error)
         except subprocess.TimeoutExpired as exc:
             partial = exc.output or ""
             if isinstance(partial, bytes):
@@ -477,6 +495,223 @@ def read_main_scene() -> str:
         return "unknown"
     match = re.search(r'^run/main_scene="([^"]+)"', text, re.MULTILINE)
     return match.group(1) if match else "not set"
+
+
+def agent_state():
+    try:
+        return json.loads(AGENT_STATE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError:
+        die(f"`{AGENT_STATE.relative_to(ROOT)}` is not valid JSON")
+
+
+def agent_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def agent_call(state: dict, method: str, params=None, timeout: float = 5.0):
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params or {},
+        "token": state["token"],
+    }
+    with socket.create_connection(("127.0.0.1", int(state["port"])), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        data = b""
+        while b"\n" not in data:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    if not data:
+        raise OSError("the agent closed the connection")
+    response = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+    if "error" in response:
+        raise RuntimeError(response["error"].get("message", "agent error"))
+    return response.get("result")
+
+
+def agent_result(method: str, params=None):
+    state = agent_state()
+    if state is None:
+        die("no agent is running. Run `bin/gai agent start` first.")
+    if not agent_pid_alive(int(state.get("pid", 0))):
+        die("the agent process is not running. Run `bin/gai agent start` again.")
+    try:
+        return agent_call(state, method, params)
+    except (OSError, RuntimeError, ValueError) as exc:
+        die(f"agent: {exc}")
+
+
+def agent_pid_matches(pid: int, engine) -> bool:
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
+            "utf-8", errors="replace"
+        )
+    except OSError:
+        return True
+    return str(engine) in cmdline or "godot" in cmdline
+
+
+def cmd_agent_start(args) -> int:
+    existing = agent_state()
+    if existing is not None:
+        pid = int(existing.get("pid", 0))
+        if agent_pid_alive(pid):
+            try:
+                agent_call(existing, "ping", timeout=1)
+                print(f"agent already running on 127.0.0.1:{existing['port']}")
+                return 0
+            except (OSError, RuntimeError, ValueError):
+                pass
+        AGENT_STATE.unlink(missing_ok=True)
+
+    engine = require_engine()
+    require_game()
+    if BIN_DIR in engine.parents:
+        die(
+            "the downloaded engine does not include the agent bridge. "
+            "Build the engine (`docs/gai/build.md`), or set `GAI_GODOT` to a built binary."
+        )
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    finally:
+        probe.close()
+
+    token = secrets.token_hex(24)
+    state = {
+        "pid": 0,
+        "port": port,
+        "token": token,
+        "engine": str(engine),
+        "log": str(AGENT_LOG),
+    }
+    env = os.environ.copy()
+    env["GAI_AGENT_PORT"] = str(port)
+    env["GAI_AGENT_TOKEN"] = token
+    AGENT_LOG.write_text("", encoding="utf-8")
+    with AGENT_LOG.open("wb") as log:
+        process = subprocess.Popen(
+            [str(engine), "--headless", "--path", str(GAME_DIR)],
+            cwd=str(ROOT),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    state["pid"] = process.pid
+    AGENT_STATE.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    try:
+        AGENT_STATE.chmod(0o600)
+    except OSError:
+        pass
+
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if process.poll() is not None:
+            tail = "\n".join(
+                AGENT_LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]
+            )
+            AGENT_STATE.unlink(missing_ok=True)
+            die(f"the agent exited before it was ready.\n{tail}")
+        try:
+            result = agent_call(state, "ping", timeout=1)
+            print(f"agent ready on 127.0.0.1:{port} ({result.get('engine', 'unknown')})")
+            return 0
+        except (OSError, RuntimeError, ValueError):
+            time.sleep(0.25)
+
+    process.terminate()
+    AGENT_STATE.unlink(missing_ok=True)
+    tail = "\n".join(
+        AGENT_LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]
+    )
+    die(f"the agent did not answer within 20s.\n{tail}")
+
+
+def cmd_agent_stop(args) -> int:
+    state = agent_state()
+    if state is None:
+        print("agent is not running")
+        return 0
+    pid = int(state.get("pid", 0))
+    engine = state.get("engine", "")
+    if agent_pid_alive(pid):
+        if engine and not agent_pid_matches(pid, engine):
+            print(f"agent: pid {pid} is not the agent; removing stale state")
+        else:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+            deadline = time.time() + 5
+            while time.time() < deadline and agent_pid_alive(pid):
+                time.sleep(0.1)
+            if agent_pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+    AGENT_STATE.unlink(missing_ok=True)
+    print("agent stopped")
+    return 0
+
+
+def cmd_agent_status(args) -> int:
+    state = agent_state()
+    if state is None:
+        print("agent: not running")
+        return 1
+    if not agent_pid_alive(int(state.get("pid", 0))):
+        print("agent: stale state; run `bin/gai agent stop`")
+        return 1
+    try:
+        result = agent_call(state, "ping", timeout=2)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"agent: process alive but not responding ({exc})")
+        return 1
+    print(f"agent: running on 127.0.0.1:{state['port']} ({result.get('engine', 'unknown')})")
+    return 0
+
+
+def cmd_agent_tree(args) -> int:
+    print(json.dumps(agent_result("scene.tree"), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_agent_get(args) -> int:
+    params = {"path": args.path}
+    if args.property:
+        params["properties"] = args.property
+    print(json.dumps(agent_result("node.get", params), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_agent_set(args) -> int:
+    try:
+        value = json.loads(args.value)
+    except json.JSONDecodeError:
+        value = args.value
+    result = agent_result(
+        "node.set",
+        {"path": args.path, "property": args.property, "value": value},
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
 
 
 def cmd_run(args) -> int:
@@ -950,6 +1185,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     editor = sub.add_parser("editor", help="open the game in the Godot editor")
     editor.set_defaults(func=cmd_editor)
+
+    agent = sub.add_parser("agent", help="inspect and edit a running game")
+    agent_sub = agent.add_subparsers(dest="agent_command", required=True)
+    agent_start = agent_sub.add_parser("start", help="start the headless game with the bridge")
+    agent_start.set_defaults(func=cmd_agent_start)
+    agent_stop = agent_sub.add_parser("stop", help="stop the bridge and the game")
+    agent_stop.set_defaults(func=cmd_agent_stop)
+    agent_status = agent_sub.add_parser("status", help="show the bridge state")
+    agent_status.set_defaults(func=cmd_agent_status)
+    agent_tree = agent_sub.add_parser("tree", help="print the live scene tree as JSON")
+    agent_tree.set_defaults(func=cmd_agent_tree)
+    agent_get = agent_sub.add_parser("get", help="read node properties")
+    agent_get.add_argument("path", help="node path, for example /root/Main")
+    agent_get.add_argument("--property", action="append", default=[], help="property to read; repeatable")
+    agent_get.set_defaults(func=cmd_agent_get)
+    agent_set = agent_sub.add_parser("set", help="set a node property")
+    agent_set.add_argument("path")
+    agent_set.add_argument("property")
+    agent_set.add_argument("value", help="JSON value, or Godot text such as Vector2(10, 20)")
+    agent_set.set_defaults(func=cmd_agent_set)
 
     engine = sub.add_parser("engine", help="manage the engine binary")
     engine_sub = engine.add_subparsers(dest="engine_command", required=True)

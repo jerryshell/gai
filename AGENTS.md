@@ -39,9 +39,26 @@ Run these from the repository root.
 | `bin/gai check` | Imports assets, parses every `.gd` file, runs the main scene headless, and fails on errors. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
+| `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. |
 | `bin/gai engine install` | Downloads official Godot 4.7.2 into `.gai/bin/`. |
 | `bin/gai upstream check` | Fails when an engine change has no active feature owner. |
 | `bin/gai upstream report` | Lists features, changed paths, and unclaimed paths. |
+
+## Live scene
+
+The agent bridge runs only in a source build with `modules/gai_agent/`. The
+downloaded engine does not include it.
+
+```sh
+bin/gai agent start
+bin/gai agent tree
+bin/gai agent get /root/Main --property visible
+bin/gai agent set /root/Main visible false
+bin/gai agent stop
+```
+
+It reads and edits the running game. Run control, input, screenshots, and editor
+mode are not implemented.
 
 ## The loop
 

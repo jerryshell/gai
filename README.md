@@ -42,6 +42,9 @@ For manual use, run `bin/gai bootstrap`. Then run `bin/gai run` or
 - `bin/gai check` imports assets, parses every script, runs the main scene, and
   fails on errors. Godot exits 0 on a script error. This command does not. It
   also fails when the engine does not match the recorded upstream base.
+- `bin/gai agent start/tree/get/set` inspects and edits a running headless game.
+  It needs a source build with `modules/gai_agent/`. The downloaded engine does
+  not include it.
 - `game/` holds a small 2D scene that runs. Replace it.
 
 ## Deep fork, not a thin layer
@@ -67,9 +70,9 @@ its conflict, rebuilds the engine, and reruns its tests. See
 
 ## Roadmap
 
-- **Engine agent bridge.** Scene tree inspection and edits, run control, input,
-  screenshots, logs, and test scenes, exposed by the engine to `bin/gai`.
-  Design: `docs/gai/features/agent-bridge.md`.
+- **Engine agent bridge.** The headless runtime bridge works: scene tree,
+  node get, and node set. Run control, input, screenshots, logs, test scenes,
+  and editor mode are planned. Design: `docs/gai/features/agent-bridge.md`.
 - **C# .NET web export.** Upstream 4.7.2 refuses it. The available patch targets
   4.8-dev and Windows. It needs a custom engine build. Design:
   `docs/gai/features/dotnet-web.md`.
@@ -79,8 +82,9 @@ its conflict, rebuilds the engine, and reruns its tests. See
 
 Version 0.1.0. The display name is gai. Internal identifiers and the binary name
 stay `godot` while the build system depends on them. The editor icon, splash,
-and UI strings are still Godot. The agent bridge and the .NET web export are not
-implemented.
+and UI strings are still Godot. The agent bridge works in a source build for
+headless scene inspection and node edits. Run control, input, screenshots,
+editor mode, and the .NET web export are not implemented.
 
 Tested on Linux. The macOS and Windows install paths are implemented but not
 tested in this release.

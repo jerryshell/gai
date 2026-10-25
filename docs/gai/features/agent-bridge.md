@@ -1,80 +1,76 @@
 # Engine agent bridge
 
-Status: planned
-Risk: high
+Status: active, first slice
+Risk: medium
 Manifest: `.gai/features/agent-bridge.json`
 
-## Why
+## What works
 
-`bin/gai` can run the game and check it, but it cannot see live editor state. An
-agent cannot inspect the scene tree, read a viewport, or inject input through a
-process that only launches the game. The engine can expose those directly.
+`bin/gai agent start` starts the game headless with `GAI_AGENT_PORT` and
+`GAI_AGENT_TOKEN`. The module `modules/gai_agent/` listens on 127.0.0.1 and
+speaks JSON-RPC 2.0 over newline-delimited JSON. The CLI can read the scene
+tree, read node properties, and set a property.
 
-This is the first vertical AI-native feature. It is not a wrapper around the
-editor. It runs inside the engine.
+- The token is random per session. The CLI stores the pid, port, and token in
+  `.gai/agent.json` with mode 600. Git ignores the file.
+- The server binds 127.0.0.1 only. It closes a client after one response and
+  drops a client that sends nothing for 10 seconds.
+- The server reuses the engine `jsonrpc` module for framing and errors.
+- `bin/gai agent start` refuses the downloaded engine. The bridge is only in a
+  source build with `modules/gai_agent/`.
 
-## Shape
+## Commands
 
-- A new module under `modules/gai_agent/`.
-- Two small hooks: start and stop the server from `main/main.cpp` and
-  `editor/editor_node.cpp`. All protocol code stays in the module.
-- JSON-RPC 2.0 over a localhost TCP socket, one JSON object per line.
-- Editor mode and runtime mode.
-- `bin/gai agent` will be the client. There is no separate daemon.
+```sh
+bin/gai agent start
+bin/gai agent status
+bin/gai agent tree
+bin/gai agent get /root/Main --property visible
+bin/gai agent set /root/Main visible false
+bin/gai agent stop
+```
 
 ## Methods
 
-| Method | Result |
-| --- | --- |
-| `scene.tree` | Nodes, types, scripts, scene paths, and selected properties. |
-| `node.get` | One node's properties and children. |
-| `node.set` | Set one property. |
-| `node.call` | Call a method with JSON arguments, return the result. |
-| `run.start` | Start the main scene or a named scene. |
-| `run.stop` | Stop the running scene. |
-| `run.status` | Running state, frame count, and current scene. |
-| `input.action` | Press or release an input action for N frames. |
-| `input.key` | Send a key event. |
-| `input.mouse` | Move or click at viewport coordinates. |
-| `screenshot` | Capture the viewport to a PNG path. |
-| `log.tail` | Return recent engine and game output. |
-| `test.run` | Run a scene headlessly for N frames, collect errors and a screenshot. |
-
-## Security
-
-- Bind `127.0.0.1` only. There is no remote mode.
-- Write a random token to `.gai/agent.token`. The file is ignored by git.
-- Every request must carry the token.
-- The server will be off by default. The planned `bin/gai agent start` command
-  will turn it on for a session.
+| Method | State | Result |
+| --- | --- | --- |
+| `ping` | implemented | Engine name and process id. |
+| `scene.tree` | implemented | Recursive node tree with names, types, paths, and scripts. |
+| `node.get` | implemented | Node info plus the requested properties. |
+| `node.set` | implemented | Set one property. Returns the new value. |
+| `node.call` | planned | Call a method with JSON arguments. |
+| `run.start` | planned | Start the main scene or a named scene. |
+| `run.stop` | planned | Stop the running scene. |
+| `run.status` | planned | Running state, frame count, and current scene. |
+| `input.action` | planned | Press or release an input action for N frames. |
+| `input.key` | planned | Send a key event. |
+| `input.mouse` | planned | Move or click at viewport coordinates. |
+| `screenshot` | planned | Capture the viewport to a PNG path. |
+| `log.tail` | planned | Return recent engine and game output. |
+| `test.run` | planned | Run a scene for N frames and collect errors. |
 
 ## Tests
 
-- Unit tests for the request parser and the JSON schema.
-- A headless editor test that opens `game/`, reads the scene tree, changes one
-  property, and reads it back.
-- A runtime test that starts the game, presses an action, and asserts a node
-  moved.
-- A screenshot test with a fixed viewport and a hash or pixel diff.
-- A test that a bad token and a non-local bind are refused.
+`tests/test_agent.py` copies `game/` to a temporary directory, starts the
+bridge, reads the tree, changes `visible`, and reads it back. It needs a source
+build with the module.
 
-Screenshots need a rendering context. A headless engine has none. CI uses a
-virtual display or a future offscreen renderer; the design must keep that path
-explicit.
+## Build
 
-## Milestones
+The source build includes the module. The downloaded official engine does not.
+`bin/gai agent start` refuses a downloaded engine with a clear message.
 
-1. `scene.tree`, `node.get`, `node.set`, and the CLI client. Tests on a sample
-   scene.
-2. `run.start`, `run.stop`, `input.*`, and `screenshot`. Runtime integration
-   tests.
-3. `test.run`, log tail, baselines, and CI with an engine build.
+The module depends on the `jsonrpc` module, which is on by default. If you
+disable `jsonrpc`, the gai module does not build.
+
+## Not yet
+
+- Run control, input injection, screenshots, log tail, and test scenes.
+- Editor mode. The current server runs in the game process.
+- A prebuilt gai engine for users who do not build. The default `bootstrap`
+  still downloads the official Godot binary.
 
 ## Upstream risk
 
-High. The hooks sit in `main/main.cpp` and `editor/editor_node.cpp`, both busy
-upstream files. Keep the protocol in the module so the hooks stay small.
-
-## Not done
-
-Nothing is implemented. This file is the design.
+Medium. The feature is a new module with no main or editor hook. It depends on
+the `jsonrpc` module and the TCP and JSON APIs, which upstream can change.

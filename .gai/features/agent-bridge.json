@@ -1,17 +1,15 @@
 {
   "title": "Engine agent bridge",
-  "status": "planned",
-  "risk": "high",
+  "status": "active",
+  "risk": "medium",
   "paths": [
-    "modules/gai_agent/",
-    "main/main.cpp",
-    "editor/editor_node.cpp"
+    "modules/gai_agent/"
   ],
   "docs": [
     "docs/gai/features/agent-bridge.md"
   ],
   "tests": [
-    "tests/gai_agent/"
+    "tests/test_agent.py"
   ],
-  "notes": "Local JSON-RPC for scene inspection, run control, input, screenshots, logs, and test scenes."
+  "notes": "Headless runtime JSON-RPC bridge: scene.tree, node.get, node.set. Run control, input, screenshots, and editor mode are planned."
 }

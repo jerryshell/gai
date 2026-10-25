@@ -26,11 +26,11 @@ Every engine change belongs to a feature in `.gai/features/`:
 ```json
 {
   "title": "Engine agent bridge",
-  "status": "planned",
-  "risk": "high",
-  "paths": ["modules/gai_agent/", "main/main.cpp"],
+  "status": "active",
+  "risk": "medium",
+  "paths": ["modules/gai_agent/"],
   "docs": ["docs/gai/features/agent-bridge.md"],
-  "tests": ["tests/gai_agent/"]
+  "tests": ["tests/test_agent.py"]
 }
 ```
 
@@ -56,18 +56,18 @@ Rebase rewrites public history. Vendoring loses ancestry. Merge keeps both.
 ## The AI-native center
 
 The engine must be usable by an agent, not only by a person with a mouse. The
-first vertical feature is the engine agent bridge:
+first vertical feature is the engine agent bridge. The first slice runs in the
+headless game:
 
-- scene tree inspection and node edits;
-- run, stop, and frame control;
-- input injection;
-- screenshots;
-- log tail;
-- test scenes.
+- scene tree inspection;
+- node property read and write;
+- a local JSON-RPC server with a per-session token.
 
-`bin/gai` will be the client. The bridge will run inside the editor or the game,
-bound to localhost with a token. The current CLI cannot see live editor state.
-The bridge will close that gap. The design is in `features/agent-bridge.md`.
+`bin/gai` is the client. The bridge runs inside the headless game, bound to
+localhost. The current CLI cannot see live editor state. The bridge closes that
+gap for the running game. Run control, input injection, screenshots, log tail,
+test scenes, and editor mode are planned. The design is in
+`features/agent-bridge.md`.
 
 ## Build gate
 
@@ -94,4 +94,5 @@ does not match the base tag. This is the game gate.
 - A shallow clone cannot run `upstream check`.
 - The .NET web export is planned, not implemented. It needs a custom engine
   build.
-- The engine agent bridge is planned, not implemented.
+- The agent bridge is implemented for the headless runtime: scene tree, node
+  get, node set. Run control, input, screenshots, and editor mode are planned.
