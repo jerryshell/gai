@@ -8,3 +8,4 @@ ts	phase	decision	why	evidence	result
 2026-10-25T23:52:00+08:00	verify	Installed the official engine through bin/gai engine install.	This proves the download, SHA-512 check, and extraction with the real release.	.gai/bin/godot	139.6 MiB downloaded; version 4.7.2.stable.official.ed1daf0bf; exit 0.
 2026-10-25T23:53:00+08:00	verify	Tested the upstream tools against a synthetic 4.8 tag with a clean merge, a README conflict, an abort, and an out-of-layer edit.	The real 4.8 tag does not exist, so the merge runbook needed a local proof.	tests/test_upstream.py	5 tests pass.
 2026-10-25T23:55:00+08:00	publish	Push main to git@github.com:jerryshell/gai.git.	The target repository was empty and the user asked for it to be the distribution.	origin/main	open
+2026-10-25T23:58:00+08:00	publish	Pushed main to origin at 4ca7679ba3.	The empty target repository now holds the full Godot history and the gai layer.	origin/main @ 4ca7679ba3	ok
