@@ -21,6 +21,16 @@ From the repository root:
 scons platform=linuxbsd target=editor dev_build=no -j$(nproc)
 ```
 
+On a 2-core machine with 3.8 GB RAM and 4 GB swap, this repository built the
+editor in 71 minutes with:
+
+```sh
+scons platform=linuxbsd target=editor dev_build=no linker=lld accesskit=no -j2
+```
+
+`accesskit=no` drops screen reader support. Use it only when its dependencies
+are not installed.
+
 macOS:
 
 ```sh
@@ -35,6 +45,12 @@ scons platform=windows target=editor dev_build=no
 
 A clean editor build takes tens of minutes on a many-core machine and hours on a
 small one. Keep several GB of free disk for each target.
+
+## After switching engines
+
+If you switch between the downloaded engine and a source build, delete
+`game/.godot` before the first run. An import left by the other binary can crash
+on exit with `Parameter "singleton" is null`. The next import rebuilds the cache.
 
 ## Run the build
 
