@@ -1,0 +1,17 @@
+{
+  "title": "Engine agent bridge",
+  "status": "planned",
+  "risk": "high",
+  "paths": [
+    "modules/gai_agent/",
+    "main/main.cpp",
+    "editor/editor_node.cpp"
+  ],
+  "docs": [
+    "docs/gai/features/agent-bridge.md"
+  ],
+  "tests": [
+    "tests/gai_agent/"
+  ],
+  "notes": "Local JSON-RPC for scene inspection, run control, input, screenshots, logs, and test scenes."
+}

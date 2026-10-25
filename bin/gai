@@ -24,7 +24,18 @@ GAME_DIR = ROOT / "game"
 BIN_DIR = GAI_DIR / "bin"
 LOG_DIR = GAI_DIR / "logs"
 UPSTREAM_FILE = GAI_DIR / "upstream.json"
+FEATURES_DIR = GAI_DIR / "features"
 VERSION_FILE = GAI_DIR / "version"
+
+WORKSPACE_PREFIXES = (".agents/", ".gai/", ".github/", "bin/", "docs/gai/", "game/")
+WORKSPACE_FILES = (
+    ".gitignore",
+    "AGENTS.md",
+    "NOTICE.md",
+    "README.md",
+    "tests/test_check.py",
+    "tests/test_upstream.py",
+)
 
 DEFAULT_UPSTREAM = "https://github.com/godotengine/godot.git"
 RELEASE_BASE = "https://github.com/godotengine/godot/releases/download/{tag}/{name}"
@@ -459,31 +470,57 @@ def cmd_editor(args) -> int:
         return 130
 
 
-def path_allowed(path: str, state: dict) -> bool:
-    if path in state.get("edited", []):
-        return True
-    if path in state.get("owned_files", []):
-        return True
-    return any(path.startswith(prefix) for prefix in state.get("owned_prefixes", []))
+def load_features():
+    features = []
+    for path in sorted(FEATURES_DIR.glob("*.json")):
+        try:
+            feature = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            die(f"`{path.relative_to(ROOT)}` is not valid JSON: {exc}")
+        feature["id"] = path.stem
+        if feature.get("status") not in ("active", "planned", "merged"):
+            die(f"`{path.relative_to(ROOT)}` has an unknown status")
+        features.append(feature)
+    return features
 
 
-def layer_violations(base: str, staged: bool = False):
+def feature_for_path(path: str, features):
+    for feature in features:
+        if feature.get("status") != "active":
+            continue
+        for claim in feature.get("paths", []):
+            if claim.endswith("/"):
+                if path.startswith(claim):
+                    return feature["id"]
+            elif path == claim:
+                return feature["id"]
+    return None
+
+
+def path_allowed(path: str, features) -> bool:
+    if path in WORKSPACE_FILES:
+        return True
+    if any(path.startswith(prefix) for prefix in WORKSPACE_PREFIXES):
+        return True
+    return feature_for_path(path, features) is not None
+
+
+def unclaimed_changes(base: str, staged: bool = False, features=None):
     args = ["diff", "--name-status", "--no-renames", base]
     if staged:
         args.insert(1, "--cached")
     result = git(*args)
-    state = load_upstream()
-    violations = []
+    if features is None:
+        features = load_features()
+    unclaimed = []
     for line in result.stdout.splitlines():
         if not line.strip():
             continue
         parts = line.split("\t")
         status, path = parts[0], parts[-1]
-        if not path_allowed(path, state):
-            violations.append((status, path))
-        elif status == "D" and path in state.get("edited", []):
-            violations.append((status, path))
-    return violations
+        if not path_allowed(path, features):
+            unclaimed.append((status, path))
+    return unclaimed
 
 
 def check_base(state: dict) -> None:
@@ -491,7 +528,7 @@ def check_base(state: dict) -> None:
     if git("cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode != 0:
         die(
             f"upstream base {commit[:8]} is not in this clone. "
-            "A shallow clone cannot verify the layer. Run `git fetch --unshallow`."
+            "A shallow clone cannot verify the fork. Run `git fetch --unshallow`."
         )
     if git("merge-base", "--is-ancestor", commit, "HEAD", check=False).returncode != 0:
         die(f"upstream base {commit[:8]} is not an ancestor of HEAD")
@@ -506,27 +543,28 @@ def missing_required(state: dict, staged: bool = False):
     return missing
 
 
-def untracked_violations(state: dict):
+def untracked_violations():
     result = git("ls-files", "--others", "--exclude-standard")
+    features = load_features()
     violations = []
     for path in result.stdout.splitlines():
-        if path.strip() and not path_allowed(path, state):
+        if path.strip() and not path_allowed(path, features):
             violations.append(("??", path))
     return violations
 
 
 def print_missing(missing) -> None:
-    print("layer: required files are missing")
+    print("fork: required files are missing")
     for path in missing:
         print(f"  {path}")
     print("Restore the file, or remove it from `required` in `.gai/upstream.json`.")
 
 
-def print_violations(violations) -> None:
-    print("layer: outside the gai layer")
-    for status, path in violations:
+def print_unclaimed(unclaimed) -> None:
+    print("fork: unclaimed engine changes")
+    for status, path in unclaimed:
         print(f"  {status} {path}")
-    print("Move gai files under an owned path, or add the path to `.gai/upstream.json` with a reason.")
+    print('Claim each path in `.gai/features/<name>.json` with `"status": "active"`, or move it to a workspace path.')
 
 
 def cmd_upstream_status(args) -> int:
@@ -536,6 +574,9 @@ def cmd_upstream_status(args) -> int:
     ahead = count.stdout.strip() if count.returncode == 0 else "unknown"
     print(f"gai {gai_version()}")
     print(f"base {state['tag']} {state['commit'][:8]} ({state.get('merged_at', 'unknown')})")
+    features = load_features()
+    active = sum(1 for feature in features if feature.get("status") == "active")
+    print(f"features: {len(features)} ({active} active)")
     print(f"commits since base: {ahead}")
     if merge.returncode == 0:
         print("merge in progress: yes")
@@ -547,24 +588,64 @@ def cmd_upstream_status(args) -> int:
 def cmd_upstream_check(args) -> int:
     state = load_upstream()
     check_base(state)
-    violations = layer_violations(state["commit"])
-    if violations:
-        print_violations(violations)
+    features = load_features()
+    unclaimed = unclaimed_changes(state["commit"], features=features)
+    if unclaimed:
+        print_unclaimed(unclaimed)
         return 1
     missing = missing_required(state)
     if missing:
         print_missing(missing)
         return 1
-    untracked = untracked_violations(state)
+    untracked = untracked_violations()
     if untracked:
-        print("layer: untracked files outside the layer")
+        print("fork: untracked files with no owner")
         for _, path in untracked:
             print(f"  {path}")
-        print("Move the file under an owned path, or add it to `.gai/upstream.json`.")
+        print("Move the file to a workspace path, or claim it in `.gai/features/`.")
         return 1
     changed = git("diff", "--name-only", state["commit"], "HEAD").stdout.splitlines()
+    active = sum(1 for feature in features if feature.get("status") == "active")
     print(f"base {state['tag']} {state['commit'][:8]}")
-    print(f"layer: ok ({len(changed)} files since base)")
+    print(f"features: {len(features)} ({active} active)")
+    print(f"fork: ok ({len(changed)} files since base)")
+    return 0
+
+
+def cmd_upstream_report(args) -> int:
+    state = load_upstream()
+    check_base(state)
+    features = load_features()
+    changed = git("diff", "--name-status", "--no-renames", state["commit"]).stdout.splitlines()
+    counts = {}
+    unclaimed = []
+    for line in changed:
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status, path = parts[0], parts[-1]
+        owner = feature_for_path(path, features)
+        if owner is None and path_allowed(path, features):
+            owner = "workspace"
+        if owner is None:
+            unclaimed.append((status, path))
+        else:
+            counts[owner] = counts.get(owner, 0) + 1
+
+    print(f"base {state['tag']} {state['commit'][:8]}")
+    print("features:")
+    for feature in features:
+        print(
+            f"  {feature['id']} {feature.get('status', '?')} "
+            f"risk={feature.get('risk', '?')} {feature.get('title', '')}"
+        )
+    print("changes:")
+    for owner in sorted(counts):
+        print(f"  {owner}: {counts[owner]}")
+    if unclaimed:
+        print_unclaimed(unclaimed)
+    else:
+        print("unclaimed: 0")
     return 0
 
 
@@ -622,14 +703,14 @@ def resolve_version_conflict() -> bool:
 
 
 def print_conflict_help(paths) -> None:
+    features = load_features()
     print("merge conflicts:")
     for path in paths:
-        print(f"  {path}")
-    print("policy:")
-    print("  README.md   keep ours: git checkout --ours README.md, then git add README.md")
-    print("  version.py  the tool resolves it; keep it only if the automatic step failed")
-    print("  .gitignore  keep both sections")
-    print("Resolve, then run: bin/gai upstream continue")
+        owner = feature_for_path(path, features)
+        if owner is None and path_allowed(path, features):
+            owner = "workspace"
+        print(f"  {path} ({owner or 'unclaimed'})")
+    print("Resolve each file, then run: bin/gai upstream continue")
 
 
 def tag_for_commit(commit: str) -> str:
@@ -642,9 +723,10 @@ def tag_for_commit(commit: str) -> str:
 
 def finalize_merge(commit: str) -> int:
     state = load_upstream()
-    violations = layer_violations(commit, staged=True)
-    if violations:
-        print_violations(violations)
+    features = load_features()
+    unclaimed = unclaimed_changes(commit, staged=True, features=features)
+    if unclaimed:
+        print_unclaimed(unclaimed)
         return 1
     missing = missing_required(state, staged=True)
     if missing:
@@ -659,7 +741,7 @@ def finalize_merge(commit: str) -> int:
     git("commit", "-m", f"Merge upstream {state['tag']}")
     print(f"merged {state['tag']} ({commit[:8]})")
     print(f"base {state['tag']} {commit[:8]}")
-    print("next: update docs that name the old version")
+    print("next: rebuild the engine (docs/gai/build.md)")
     print("then: bin/gai engine install --force && bin/gai check")
     return 0
 
@@ -733,14 +815,17 @@ def cmd_doctor(args) -> int:
 
     state = load_upstream()
     print(f"upstream {state['tag']} {state['commit'][:8]}")
+    features = load_features()
+    active = sum(1 for feature in features if feature.get("status") == "active")
+    print(f"features: {len(features)} ({active} active)")
     if git("cat-file", "-e", f"{state['commit']}^{{commit}}", check=False).returncode != 0:
         problems.append("upstream base is not in this clone (shallow clone?)")
     elif git("merge-base", "--is-ancestor", state["commit"], "HEAD", check=False).returncode != 0:
         problems.append("upstream base is not an ancestor of HEAD")
     else:
-        violations = layer_violations(state["commit"])
-        if violations:
-            problems.append(f"{len(violations)} paths outside the gai layer")
+        unclaimed = unclaimed_changes(state["commit"])
+        if unclaimed:
+            problems.append(f"{len(unclaimed)} unclaimed engine changes")
         missing = missing_required(state)
         if missing:
             problems.append(f"{len(missing)} required files are missing")
@@ -820,8 +905,10 @@ def build_parser() -> argparse.ArgumentParser:
     upstream_sub = upstream.add_subparsers(dest="upstream_command", required=True)
     status = upstream_sub.add_parser("status", help="show the recorded base and merge state")
     status.set_defaults(func=cmd_upstream_status)
-    layer = upstream_sub.add_parser("check", help="fail if a change leaves the gai layer")
+    layer = upstream_sub.add_parser("check", help="fail if an engine change has no feature owner")
     layer.set_defaults(func=cmd_upstream_check)
+    report = upstream_sub.add_parser("report", help="list features, changed files, and unclaimed paths")
+    report.set_defaults(func=cmd_upstream_report)
     merge = upstream_sub.add_parser("merge", help="fetch and merge an upstream tag")
     merge.add_argument("ref", help="tag or commit to merge")
     merge.set_defaults(func=cmd_upstream_merge)

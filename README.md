@@ -2,9 +2,10 @@
 
 Godot, but AI Native.
 
-gai is a fork of Godot 4.7.2 that you clone as your game. The engine source is
+gai is a deep fork of Godot 4.7.2, built around agents. The engine source is
 here, a starter game is in `game/`, and pi or opencode can work on it from the
-first minute.
+first minute. We change the engine where the agent workflow needs it. gai is not
+a thin patch over Godot.
 
 ## Start
 
@@ -23,7 +24,7 @@ reads `AGENTS.md` and works in `game/`.
 
 `bin/gai engine install` downloads the official Godot 4.7.2 binary (about 140 MB)
 and checks its SHA-512. The clone carries the full Godot history, about 1.2 GB in
-`.git`. That history is what makes upstream merges cheap.
+`.git`. That history is what makes upstream merges possible.
 
 On Windows, run `python bin/gai` in place of `bin/gai`.
 
@@ -38,41 +39,43 @@ On Windows, run `python bin/gai` in place of `bin/gai`.
   also fails when the engine does not match the recorded upstream base.
 - `game/` holds a small 2D scene that runs. Replace it.
 
+## Deep fork, not a thin layer
+
+Every engine change belongs to a feature in `.gai/features/`. Active features
+own their paths. `bin/gai upstream check` fails on an engine path with no owner,
+not on the change itself. `bin/gai upstream report` lists the features, the
+changed paths, and the unclaimed paths.
+
+Upstream merges are expected to conflict. The feature that owns a file resolves
+its conflict, rebuilds the engine, and reruns its tests. See
+`docs/gai/upstream.md`.
+
 ## What is here
 
 | Path | What it is |
 | --- | --- |
 | `game/` | Your Godot project. |
-| engine source | Godot 4.7.2-stable, unchanged except the display name and project URL. |
-| `.gai/` | gai metadata: version, upstream base, layer rules. |
+| engine source | Godot 4.7.2-stable, plus the gai engine features. |
+| `.gai/` | gai metadata: version, upstream base, feature manifests, layer rules. |
 | `bin/gai` | The command line. Python 3.8 or later, no dependencies. |
-| `docs/gai/` | Architecture, upstream sync, build, and decisions. |
+| `docs/gai/` | Architecture, upstream sync, build, features, and decisions. |
 
-## Stay close to upstream
+## Roadmap
 
-The engine tracks `godotengine/godot`. The base is recorded in
-`.gai/upstream.json`. To move to a new release:
-
-```sh
-bin/gai upstream merge 4.8-stable
-bin/gai engine install --force
-bin/gai check
-```
-
-Conflicts can appear only in the files the layer edits. The tool resolves
-`version.py` by keeping our name and website. It prints the policy for the
-remaining files, `README.md` and `.gitignore`. `bin/gai upstream check` fails
-when a commit changes any other upstream file, so the layer cannot grow by
-accident.
-
-Read `docs/gai/upstream.md` before you sync.
+- **Engine agent bridge.** Scene tree inspection and edits, run control, input,
+  screenshots, logs, and test scenes, exposed by the engine to `bin/gai`.
+  Design: `docs/gai/features/agent-bridge.md`.
+- **C# .NET web export.** Upstream 4.7.2 refuses it. The available patch targets
+  4.8-dev and Windows. It needs a custom engine build. Design:
+  `docs/gai/features/dotnet-web.md`.
+- **Full branding.** Editor icon, splash, and UI strings.
 
 ## Status
 
 Version 0.1.0. The display name is gai. Internal identifiers and the binary name
-stay `godot` so upstream merges stay cheap. The editor icon, splash, and UI
-strings are still Godot. There is no in-editor AI panel and no headless export
-command yet.
+stay `godot` while the build system depends on them. The editor icon, splash,
+and UI strings are still Godot. The agent bridge and the .NET web export are not
+implemented.
 
 Tested on Linux. The macOS and Windows install paths are implemented but not
 tested in this release.

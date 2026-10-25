@@ -1,7 +1,7 @@
 # 0001 Keep a thin layer over upstream
 
 Date: 2026-10-25
-Status: accepted
+Status: superseded by 0003 (2026-10-26)
 
 ## Context
 

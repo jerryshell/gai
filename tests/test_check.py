@@ -54,9 +54,6 @@ class CheckTest(unittest.TestCase):
             "tag": tag,
             "commit": "0" * 40,
             "merged_at": "2026-10-25",
-            "owned_prefixes": [],
-            "owned_files": [],
-            "edited": [],
         }
         (self.tmp / ".gai" / "upstream.json").write_text(
             json.dumps(state, indent=2) + "\n", encoding="utf-8"

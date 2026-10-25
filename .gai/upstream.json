@@ -3,36 +3,21 @@
   "tag": "4.7.2-stable",
   "commit": "ed1daf0bf001b61586d9930840f2f1394092c079",
   "merged_at": "2026-10-25",
-  "owned_prefixes": [
-    ".gai/",
-    ".agents/",
-    "docs/gai/",
-    "game/"
-  ],
-  "owned_files": [
-    ".github/workflows/gai.yml",
-    "AGENTS.md",
-    "NOTICE.md",
-    "bin/gai",
-    "tests/test_check.py",
-    "tests/test_upstream.py"
-  ],
-  "edited": [
-    ".gitignore",
-    "README.md",
-    "version.py"
-  ],
   "required": [
     ".agents/skills/godot-game/SKILL.md",
     ".gai/upstream.json",
     "AGENTS.md",
     "bin/gai",
     "docs/gai/architecture.md",
+    "docs/gai/build.md",
+    "docs/gai/features/agent-bridge.md",
+    "docs/gai/features/dotnet-web.md",
     "docs/gai/upstream.md",
     "game/project.godot",
     "game/scenes/main.tscn",
     "game/scripts/main.gd",
     "tests/test_check.py",
-    "tests/test_upstream.py"
+    "tests/test_upstream.py",
+    "version.py"
   ]
 }

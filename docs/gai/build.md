@@ -65,3 +65,15 @@ Start the editor or the game. The window title and the startup header use the
 ```sh
 ./bin/godot.linuxbsd.editor.x86_64 --path game --editor
 ```
+
+## Build gate for engine features
+
+`bin/gai check` tests the game, not the engine. An engine change needs an editor
+build and the feature tests before you commit. The current CI does not build the
+engine yet. That is the next infrastructure piece.
+
+## .NET web export
+
+The .NET web export is a planned feature. It needs a custom engine build and
+custom web templates, not the normal `scons` command. See
+`features/dotnet-web.md`.

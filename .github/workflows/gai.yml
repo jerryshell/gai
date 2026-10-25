@@ -5,14 +5,16 @@ on:
   pull_request:
 
 jobs:
-  layer:
+  fork:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Check the gai layer
+      - name: Check fork ownership
         run: python3 bin/gai upstream check
+      - name: Report fork ownership
+        run: python3 bin/gai upstream report
       - name: Test the upstream tools
         run: python3 tests/test_upstream.py
 

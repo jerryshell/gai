@@ -5,7 +5,8 @@ Use this when Godot publishes a new tag, for example `4.8-stable`.
 ## Before you start
 
 - You are on `main` with no uncommitted changes to tracked files.
-- `bin/gai check` passes.
+- The engine builds and the feature tests pass.
+- `bin/gai upstream report` shows the current features and divergence.
 - You can reach github.com.
 
 ## Merge
@@ -15,20 +16,30 @@ bin/gai upstream merge 4.8-stable
 ```
 
 The command adds the `upstream` remote when it is missing, fetches tags, runs
-`git merge --no-commit --no-ff`, checks the result against the new base, records
-the base in `.gai/upstream.json`, and commits.
+`git merge --no-commit --no-ff`, checks that every changed engine path has an
+active feature, records the base in `.gai/upstream.json`, and commits.
 
-If `version.py` conflicts, the command resolves it. It takes upstream's file
-and re-applies our `name` and `website`. The new version numbers and `docs`
-value stay.
+If `version.py` conflicts, the command resolves it as part of the `branding`
+feature. It takes upstream's file and re-applies our `name` and `website`. The
+new version numbers and `docs` value stay.
 
-If it stops with other conflicts, resolve only the listed files.
+## Resolve conflicts
 
-| File | Policy |
-| --- | --- |
-| `README.md` | Keep ours. Then add any upstream fact the front door needs. |
-| `version.py` | The tool resolves it. Resolve it by hand only if the automatic step failed. |
-| `.gitignore` | Keep both sets of rules. |
+Deep fork conflicts are expected. The merge command lists each conflict with its
+owner:
+
+```text
+merge conflicts:
+  README.md (workspace)
+  platform/web/export/export_plugin.cpp (dotnet-web)
+```
+
+- The feature owner resolves its files. Read the feature doc and keep the
+  feature behavior.
+- Workspace conflicts, such as `README.md` and docs, are resolved by whoever owns
+  the workspace.
+- An unclaimed conflict is a missing feature manifest. Add one, or activate the
+  feature that should own the file, before you resolve it.
 
 Then:
 
@@ -36,9 +47,6 @@ Then:
 git add <files>
 bin/gai upstream continue
 ```
-
-If the automatic `version.py` step fails, take upstream's file and set
-`name = "gai"` and our website by hand.
 
 To back out:
 
@@ -48,16 +56,16 @@ bin/gai upstream abort
 
 ## After the merge
 
+1. Build the engine. See `docs/gai/build.md`.
+2. Run the feature tests.
+3. Run the game gate:
+
 ```sh
 bin/gai engine install --force
 bin/gai check
-python3 tests/test_upstream.py
 ```
 
-Run the test suite. If Godot changes the release asset names, update `RELEASES`
-in `bin/gai`.
-
-Update the version strings that describe the project:
+4. Update the version strings that describe the project:
 
 ```sh
 grep -rn '4\.7' README.md AGENTS.md docs/gai .agents game/project.godot
@@ -67,24 +75,26 @@ Replace the engine version, the `config/features` value, and the doc headings.
 The editor rewrites `game/project.godot` when it saves the project. Commit that
 change.
 
-Commit any doc updates.
+5. Update each feature's `risk` if the merge showed new churn.
+6. If a feature's upstream files moved or were deleted, update its manifest and
+   its doc.
 
-If you build the engine from source, rebuild it. `bin/gai` prefers a source build
-under `bin/godot.*.editor.*` over the downloaded binary.
+If Godot changes the release asset names, update `RELEASES` in `bin/gai`.
 
 ## What not to do
 
 - Do not rebase `main`. People clone it.
-- Do not edit an upstream file outside the allowlist. Put gai code in an owned
-  path.
+- Do not resolve a conflict in a file your feature does not own. Add or update
+  the owner instead.
 - Do not move the base by hand. The merge command owns `.gai/upstream.json`.
-- Do not merge with a dirty working tree.
+- Do not merge with a dirty tree.
+- Do not call the merge done before the engine builds.
 
-## Check the invariant
+## Check ownership
 
 ```sh
 bin/gai upstream check
+bin/gai upstream report
 ```
 
-The command fails on a committed or untracked path outside
-`.gai/upstream.json`. CI runs it with full history.
+Both commands need full history. A shallow clone cannot verify the base.

@@ -76,11 +76,12 @@ class UpstreamTest(unittest.TestCase):
         self.repo.write("README.md", "# Godot Engine\n")
         self.repo.write(
             "version.py",
-            'short_name = "godot"\nname = "Godot Engine"\nmajor = 4\nminor = 7\npatch = 2\nstatus = "stable"\n'
-            'module_config = ""\nwebsite = "https://godotengine.org"\ndocs = "4.7"\n',
+            'short_name = "godot"\nname = "Godot Engine"\nmajor = 4\nminor = 7\npatch = 2\n'
+            'status = "stable"\nmodule_config = ""\nwebsite = "https://godotengine.org"\ndocs = "4.7"\n',
         )
         self.repo.write(".gitignore", "bin\n")
         self.repo.write("core/os/os.cpp", "// upstream\n")
+        self.repo.write("game/project.godot", "config_version=5\n")
         self.repo.write(".gai/version", "0.0.0-test\n")
         self.repo.git("init", "-q", "-b", "main")
         self.repo.git("add", "-A")
@@ -92,26 +93,48 @@ class UpstreamTest(unittest.TestCase):
             "tag": "4.7.2-stable",
             "commit": self.base,
             "merged_at": "2026-10-25",
-            "owned_prefixes": [".gai/", "game/"],
-            "owned_files": ["bin/gai"],
-            "edited": [".gitignore", "README.md", "version.py"],
-            "required": ["bin/gai", "game/project.godot"],
+            "required": ["bin/gai", "game/project.godot", "version.py"],
         }
         self.repo.write(".gai/upstream.json", json.dumps(state, indent=2) + "\n")
-        self.repo.git("add", ".gai/upstream.json")
-        self.repo.git("commit", "-q", "-m", "record upstream base")
+        self.repo.write(
+            ".gai/features/branding.json",
+            json.dumps(
+                {
+                    "title": "Branding",
+                    "status": "active",
+                    "risk": "low",
+                    "paths": ["version.py"],
+                    "docs": [],
+                    "tests": [],
+                },
+                indent=2,
+            )
+            + "\n",
+        )
+        self.repo.write(
+            ".gai/features/test-engine.json",
+            json.dumps(
+                {
+                    "title": "Test engine feature",
+                    "status": "active",
+                    "risk": "high",
+                    "paths": ["core/"],
+                    "docs": [],
+                    "tests": [],
+                },
+                indent=2,
+            )
+            + "\n",
+        )
+        self.repo.git("add", ".gai")
+        self.repo.git("commit", "-q", "-m", "record upstream base and features")
 
         self.repo.write("README.md", "# test game\n")
-        self.repo.write(
-            "version.py",
-            'short_name = "godot"\nname = "gai"\nmajor = 4\nminor = 7\npatch = 2\nstatus = "stable"\n'
-            'module_config = ""\nwebsite = "https://github.com/jerryshell/gai"\ndocs = "4.7"\n',
-        )
+        self.repo.write("version.py", 'short_name = "godot"\nname = "gai"\nmajor = 4\nminor = 7\npatch = 2\n'
+                         'status = "stable"\nmodule_config = ""\nwebsite = "https://github.com/jerryshell/gai"\ndocs = "4.7"\n')
         self.repo.write(".gitignore", "bin\n!/bin/\n/bin/*\n!/bin/gai\n")
-        self.repo.write("game/project.godot", "config_version=5\n")
-        self.repo.write("game/scripts/main.gd", "extends Node2D\n")
         self.repo.git("add", "-A")
-        self.repo.git("commit", "-q", "-m", "gai layer")
+        self.repo.git("commit", "-q", "-m", "fork workspace")
 
     def make_upstream(self, files: dict):
         bare = self.tmp / "upstream.git"
@@ -131,10 +154,10 @@ class UpstreamTest(unittest.TestCase):
     def state(self):
         return json.loads((self.repo.root / ".gai" / "upstream.json").read_text())
 
-    def assert_layer_ok(self):
+    def assert_fork_ok(self):
         result = self.repo.gai("upstream", "check")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("layer: ok", result.stdout)
+        self.assertIn("fork: ok", result.stdout)
 
     def test_clean_merge_moves_the_base(self):
         self.make_upstream({"core/os/os.cpp": "// upstream change\n"})
@@ -146,14 +169,13 @@ class UpstreamTest(unittest.TestCase):
         self.assertEqual(state["tag"], "4.8.0-stable")
         self.assertEqual(state["commit"], commit)
         self.assertEqual((self.repo.root / "core/os/os.cpp").read_text(), "// upstream change\n")
-        self.assert_layer_ok()
+        self.assert_fork_ok()
 
     def test_readme_conflict_then_continue(self):
         self.make_upstream({"README.md": "# upstream readme\n"})
         result = self.repo.gai("upstream", "merge", "4.8.0-stable")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("README.md", result.stdout)
-        self.assertIn("keep ours", result.stdout)
+        self.assertIn("README.md (workspace)", result.stdout)
 
         self.repo.git("checkout", "--ours", "README.md")
         self.repo.git("add", "README.md")
@@ -162,7 +184,7 @@ class UpstreamTest(unittest.TestCase):
 
         self.assertEqual((self.repo.root / "README.md").read_text(), "# test game\n")
         self.assertEqual(self.state()["tag"], "4.8.0-stable")
-        self.assert_layer_ok()
+        self.assert_fork_ok()
 
     def test_abort_restores_the_repo(self):
         self.make_upstream({"README.md": "# upstream readme\n"})
@@ -171,8 +193,46 @@ class UpstreamTest(unittest.TestCase):
 
         abort = self.repo.gai("upstream", "abort")
         self.assertEqual(abort.returncode, 0, abort.stdout + abort.stderr)
-        self.assertTrue(self.repo.git("rev-parse", "--verify", "-q", "MERGE_HEAD", check=False).returncode != 0)
+        self.assertTrue(
+            self.repo.git("rev-parse", "--verify", "-q", "MERGE_HEAD", check=False).returncode != 0
+        )
         self.assertEqual((self.repo.root / "README.md").read_text(), "# test game\n")
+
+    def test_unclaimed_engine_edit_fails(self):
+        self.repo.write("editor/evil.cpp", "// no feature owns this\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "unclaimed engine edit")
+        result = self.repo.gai("upstream", "check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unclaimed engine changes", result.stdout)
+        self.assertIn("editor/evil.cpp", result.stdout)
+
+    def test_claimed_engine_edit_is_allowed(self):
+        self.repo.write("core/os/os.cpp", "// claimed change\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "claimed engine edit")
+        self.assert_fork_ok()
+
+    def test_untracked_unclaimed_file_fails(self):
+        self.repo.write("editor/evil.cpp", "// untracked\n")
+        result = self.repo.gai("upstream", "check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("editor/evil.cpp", result.stdout)
+
+    def test_deleting_a_required_file_fails(self):
+        self.repo.git("rm", "game/project.godot")
+        self.repo.git("commit", "-q", "-m", "delete required")
+        result = self.repo.gai("upstream", "check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("game/project.godot", result.stdout)
+        self.assertIn("required files are missing", result.stdout)
+
+    def test_merge_refuses_a_dirty_tree(self):
+        self.make_upstream({"core/os/os.cpp": "// upstream change\n"})
+        self.repo.write("README.md", "# local edit\n")
+        result = self.repo.gai("upstream", "merge", "4.8.0-stable")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("uncommitted", (result.stdout + result.stderr).lower())
 
     def test_version_bump_is_resolved_automatically(self):
         self.make_upstream({"version.py": VERSION_BUMP})
@@ -185,14 +245,14 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn('website = "https://github.com/jerryshell/gai"', text)
         self.assertIn("minor = 8", text)
         self.assertIn('docs = "4.8"', text)
-        self.assert_layer_ok()
+        self.assert_fork_ok()
 
     def test_version_bump_and_readme_conflict(self):
         self.make_upstream({"version.py": VERSION_BUMP, "README.md": "# upstream readme\n"})
         result = self.repo.gai("upstream", "merge", "4.8.0-stable")
         self.assertEqual(result.returncode, 1)
         self.assertIn("resolved version.py", result.stdout)
-        self.assertIn("README.md", result.stdout)
+        self.assertIn("README.md (workspace)", result.stdout)
 
         self.repo.git("checkout", "--ours", "README.md")
         self.repo.git("add", "README.md")
@@ -202,42 +262,14 @@ class UpstreamTest(unittest.TestCase):
         text = (self.repo.root / "version.py").read_text()
         self.assertIn('name = "gai"', text)
         self.assertIn("minor = 8", text)
-        self.assert_layer_ok()
+        self.assert_fork_ok()
 
-    def test_deleting_a_required_file_fails(self):
-        self.repo.git("rm", "game/project.godot")
-        self.repo.git("commit", "-q", "-m", "delete required")
-        result = self.repo.gai("upstream", "check")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("game/project.godot", result.stdout)
-        self.assertIn("required files are missing", result.stdout)
-
-    def test_untracked_file_outside_the_layer_fails(self):
-        self.repo.write("core/evil.cpp", "// local\n")
-        result = self.repo.gai("upstream", "check")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("core/evil.cpp", result.stdout)
-
-    def test_merge_refuses_a_dirty_tree(self):
-        self.make_upstream({"core/os/os.cpp": "// upstream change\n"})
-        self.repo.write("README.md", "# local edit\n")
-        result = self.repo.gai("upstream", "merge", "4.8.0-stable")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("uncommitted", (result.stdout + result.stderr).lower())
-
-    def test_edit_outside_the_layer_fails(self):
-        self.repo.write("core/os/os.cpp", "// local change\n")
-        self.repo.git("add", "-A")
-        self.repo.git("commit", "-q", "-m", "edit engine")
-        result = self.repo.gai("upstream", "check")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("M core/os/os.cpp", result.stdout)
-
-    def test_owned_file_is_allowed(self):
-        self.repo.write("game/scripts/player.gd", "extends Node2D\n")
-        self.repo.git("add", "-A")
-        self.repo.git("commit", "-q", "-m", "add game script")
-        self.assert_layer_ok()
+    def test_upstream_report_lists_features(self):
+        result = self.repo.gai("upstream", "report")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("branding", result.stdout)
+        self.assertIn("test-engine", result.stdout)
+        self.assertIn("unclaimed: 0", result.stdout)
 
 
 if __name__ == "__main__":

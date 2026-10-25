@@ -1,0 +1,19 @@
+{
+  "title": "C# .NET web export",
+  "status": "planned",
+  "risk": "high",
+  "paths": [
+    "platform/web/",
+    "modules/mono/",
+    "misc/dist/",
+    "SConstruct",
+    "methods.py"
+  ],
+  "docs": [
+    "docs/gai/features/dotnet-web.md"
+  ],
+  "tests": [
+    "tests/dotnet_web/"
+  ],
+  "notes": "Upstream 4.7.2 refuses .NET web export. The available patch targets 4.8-dev and Windows. Needs a build platform."
+}

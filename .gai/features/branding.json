@@ -1,0 +1,11 @@
+{
+  "title": "Branding and fork identity",
+  "status": "active",
+  "risk": "low",
+  "paths": [
+    "version.py"
+  ],
+  "docs": [],
+  "tests": [],
+  "notes": "Display name and website. short_name and the binary name stay godot while the build system depends on them."
+}

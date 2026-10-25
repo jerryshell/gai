@@ -1,16 +1,16 @@
 # gai agent guide
 
-gai is Godot 4.7.2 with an AI-native workspace. The engine source is at the
-repository root. Your game is in `game/`.
+gai is a deep fork of Godot 4.7.2, built around agents. The engine source is at
+the repository root. Your game is in `game/`.
 
 Read `docs/gai/architecture.md` before you change anything outside `game/`.
 
 ## Work in the game
 
 - Put game code, scenes, and assets in `game/`.
-- Do not edit the engine, `README.md`, `version.py`, or `.gitignore` for a game task.
+- A game task does not edit the engine, `README.md`, `version.py`, or `.gitignore`.
 - Do not commit `game/.godot/`, `.gai/bin/`, or `.gai/logs/`.
-- When a task needs an engine change, stop and read `docs/gai/upstream.md` first.
+- When a task needs an engine change, read `docs/gai/upstream.md` first.
 
 ## Commands
 
@@ -18,12 +18,13 @@ Run these from the repository root.
 
 | Command | What it does |
 | --- | --- |
-| `bin/gai doctor` | Checks the engine, the game, and the upstream base. |
+| `bin/gai doctor` | Checks the engine, the game, features, and the upstream base. |
 | `bin/gai check` | Imports assets, parses every `.gd` file, runs the main scene headless, and fails on errors. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
 | `bin/gai engine install` | Downloads official Godot 4.7.2 into `.gai/bin/`. |
-| `bin/gai upstream check` | Fails when a commit changes a file outside the gai layer. |
+| `bin/gai upstream check` | Fails when an engine change has no active feature owner. |
+| `bin/gai upstream report` | Lists features, changed paths, and unclaimed paths. |
 
 ## The loop
 
@@ -54,15 +55,23 @@ exit code by itself. `bin/gai check` scans the output and fails for you.
 
 ## Verification
 
-- `bin/gai check` is the gate. A clean run prints `check: ok`.
+- `bin/gai check` is the game gate. A clean run prints `check: ok`.
 - You cannot see the game window. Never claim that a scene looks right. Say what you changed and what the check proves.
 - For logic that is hard to observe, add a temporary `print()` and run `bin/gai run -- --headless --quit-after 60`.
 - Do not hide a failing check. Report it with the first error from the log.
 
-## Engine changes
+## Engine work
 
-The engine is upstream Godot plus a thin gai layer. Read `docs/gai/upstream.md`
-and run `bin/gai upstream check` before you commit any engine change. A change
-outside the layer is a product decision, so ask the human first.
+The engine is part of the product. A game task stays in `game/` by default. An
+engine task does all of this:
+
+1. Read `docs/gai/architecture.md` and `docs/gai/upstream.md`.
+2. Add or activate a feature in `.gai/features/`. Claim every engine path.
+3. Add the feature doc and tests.
+4. Build the engine. `bin/gai check` tests the game, not the engine.
+5. Run `bin/gai upstream check` before you commit.
+
+A deep engine change that no feature owns is a bug in the change, not in the
+tool. An engine feature is not done until the engine builds and its tests pass.
 
 Godot 4.7 documentation: https://docs.godotengine.org/en/4.7/

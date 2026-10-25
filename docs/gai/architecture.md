@@ -1,96 +1,91 @@
 # Architecture
 
-gai has three layers. Each layer has one owner.
+gai is a deep fork of Godot 4.7.2, built around agents as first-class users. The
+engine is part of the product. We change it when the AI-native workflow needs it.
+Upstream tracking is a maintenance process, not a limit on features.
 
-| Layer | Files | Owner |
+## Parts
+
+| Part | Where | Owner |
 | --- | --- | --- |
 | Upstream Godot | every file from the 4.7.2-stable tag | The Godot project |
-| gai layer | new files, plus three edited upstream files | This repository |
+| gai engine features | engine files claimed by a feature | This repository |
+| gai workspace | `bin/gai`, `AGENTS.md`, `docs/gai`, `.agents`, `game` | This repository |
 | Your game | `game/` | You and your agent |
 
-## The invariant
+## Features own divergence
 
-`main` is upstream Godot plus a thin layer. `.gai/upstream.json` records the
-upstream commit we last merged, and the paths that are allowed to differ:
+Every engine change belongs to a feature in `.gai/features/`:
 
-- `owned_prefixes` are directories that contain only gai files: `.gai/`,
-  `.agents/`, `docs/gai/`, and `game/`.
-- `owned_files` are individual new files, such as `bin/gai`, `AGENTS.md`,
-  `NOTICE.md`, and the CI workflow.
-- `edited` lists the upstream files we change: `README.md`, `version.py`, and
-  `.gitignore`.
-- `required` lists core layer files that must exist in every commit.
-
-`bin/gai upstream check` diffs the recorded base against `HEAD`. Every path must
-be owned or edited. Anything else fails. CI runs the check on every push.
-
-## Why merge, not rebase
-
-| Option | Effect on a 4.8 update |
-| --- | --- |
-| Merge tags into `main` | One merge commit. Conflicts stay inside the allowlist. Clones stay valid. |
-| Rebase onto the new tag | Rewrites public history. Every clone must reset. Conflicts remain. |
-| Rebrand the whole source | Hundreds of files change. Every release conflicts. |
-| Vendor the engine into the game | Loses upstream history and the ability to merge. |
-
-The merge wins because the rule that keeps it cheap is structural. Put gai code
-in new paths, and edit as few upstream files as possible. See
-`decisions/0001-thin-layer.md`.
-
-## The branding line
-
-`version.py` sets the display name:
-
-```python
-short_name = "godot"
-name = "gai"
-website = "https://github.com/jerryshell/gai"
+```json
+{
+  "title": "Engine agent bridge",
+  "status": "planned",
+  "risk": "high",
+  "paths": ["modules/gai_agent/", "main/main.cpp"],
+  "docs": ["docs/gai/features/agent-bridge.md"],
+  "tests": ["tests/gai_agent/"]
+}
 ```
 
-`short_name` stays `godot`. `methods.py` checks for that exact string when it
-detects the engine source, and `platform/linuxbsd/SCsub` hardcodes `#bin/godot`
-as the build target. Changing either would push the brand into the build system
-and create conflicts for no user-visible gain. The window title, version header,
-and crash reports use the new display name.
+- `active` features own their paths. `bin/gai upstream check` accepts changes
+  there.
+- `planned` features reserve paths but do not own them. Set `status` to `active`
+  before the first engine edit.
+- `risk` is the expected conflict cost at the next upstream merge. High-risk
+  features need a build and a test after every merge.
 
-Full UI rebranding is out of scope for 0.1.0.
+`bin/gai upstream check` fails when an engine path has no active feature. It does
+not fail because the engine changed. The rule is ownership, not a size limit.
+`bin/gai upstream report` lists features, changed paths, and unclaimed paths.
+
+## Upstream tracking
+
+`main` merges Godot tags. The base is in `.gai/upstream.json`. A deep fork
+conflicts on every release. The feature that claims a file resolves its conflict,
+then rebuilds and reruns its tests. See `upstream.md`.
+
+Rebase rewrites public history. Vendoring loses ancestry. Merge keeps both.
+
+## The AI-native center
+
+The engine must be usable by an agent, not only by a person with a mouse. The
+first vertical feature is the engine agent bridge:
+
+- scene tree inspection and node edits;
+- run, stop, and frame control;
+- input injection;
+- screenshots;
+- log tail;
+- test scenes.
+
+`bin/gai` is the client. The bridge runs inside the editor or the game, bound to
+localhost with a token. The current CLI cannot see live editor state. The bridge
+closes that gap. The design is in `features/agent-bridge.md`.
+
+## Build gate
+
+A deep fork must build. `docs/gai/build.md` has the commands. `bin/gai check`
+tests the game, not the engine. An engine feature is not done until the engine
+builds and its tests pass. The current CI does not build the engine yet. That is
+the next infrastructure piece.
+
+## Branding
+
+The `branding` feature claims `version.py` and sets `name = "gai"`. The binary
+name and `short_name` stay `godot` while the build system depends on them. Full
+UI branding is a feature, not a one-off edit.
 
 ## What check proves
 
-Godot 4.7.2 exits 0 when a scene hits a parse or runtime error. The engine prints
-`SCRIPT ERROR` and returns success. A CI job that checks only the exit code
-passes a broken game.
-
-`bin/gai check` runs three stages and fails on any `ERROR`, `SCRIPT ERROR`, or
-`SHADER ERROR` line:
-
-1. `--import` loads the project and imports assets.
-2. `--check-only --script` parses every `.gd` file under `game/`.
-3. `--quit-after 5` runs the main scene and catches runtime errors.
-
-Before the stages, `check` compares the engine and `version.py` to the recorded
-upstream tag. It refuses to run on a mismatched engine, so a forgotten
-`engine install --force` cannot leave a green check on the old version.
-
-The full output goes to `.gai/logs/check.log`.
-
-## The agent surface
-
-Agents already have a shell. `bin/gai` is one Python file with no dependencies,
-so it works in pi, opencode, a terminal, or CI. The instructions are in
-`AGENTS.md`. The detailed Godot patterns are in
-`.agents/skills/godot-game/`, which Pi and other Agent Skills tools load on
-demand.
-
-There is no MCP server and no editor plugin in 0.1.0. Both add a process or
-engine code to maintain. See `decisions/0002-cli-first.md`.
+Godot exits 0 on script errors. `bin/gai check` imports assets, parses every
+script, and runs the main scene. It also refuses an engine or `version.py` that
+does not match the base tag. This is the game gate.
 
 ## Limits
 
-- The game lives in `game/`. The repository root is not a Godot project, so do
-  not point the editor at it.
-- A shallow clone cannot run `upstream check`, because the recorded base commit
-  is missing. CI checks out full history for this job.
-- The skill and docs describe 4.7.2. Update them when a merge changes behavior.
-- `upstream merge` follows one release line. After 4.8, an older 4.7 maintenance
-  tag is already in history and the tool will not merge it back.
+- The game lives in `game/`. The repository root is not a Godot project.
+- A shallow clone cannot run `upstream check`.
+- The .NET web export is planned, not implemented. It needs a custom engine
+  build.
+- The engine agent bridge is planned, not implemented.
