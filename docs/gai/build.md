@@ -100,6 +100,25 @@ and says so. `bin/gai steam status` reports the SDK and the runtime library.
 The module links `libsteam_api.so` with an `$ORIGIN` runtime path, so the library
 must sit next to the editor binary. `bin/gai` copies it there.
 
+## Web export
+
+A project needs a `Web` export preset and Godot's web export templates. The
+templates for 4.7.2 live in `~/.local/share/godot/export_templates/4.7.2.stable/`
+on Linux:
+
+```sh
+bin/gai export web --clean --gzip
+```
+
+The command writes `build/web/index.html`, adds `.gdignore` in the output so
+Godot does not import the exported files, and with `--gzip` writes `.gz` files
+for a static server with `gzip_static`. It checks that `index.html`,
+`index.wasm`, and `index.pck` exist.
+
+The gai engine uses Godot's official web template today. The web runtime is
+stock Godot, so the agent bridge and Steam are not in it. A custom gai web
+template needs Emscripten and is not built yet.
+
 ## Build gate for engine features
 
 `bin/gai check` tests the game, not the engine. An engine change needs an editor

@@ -46,6 +46,7 @@ Run these from the repository root.
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
 | `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. |
+| `bin/gai export web` | Exports a web build. Needs a `Web` preset and export templates. |
 | `bin/gai steam status` | Shows the Steam module, the SDK, and the runtime library. |
 | `bin/gai engine install` | Downloads the official fallback engine into `.gai/bin/`. It has no gai features. |
 | `bin/gai upstream check` | Warns when an engine change has no feature owner; `--strict` fails. |
@@ -88,6 +89,22 @@ singleton. In editor mode `run.*`, `scene.change`, and `input.*` need
 `--display` for screenshots. The token holder has full local access, including
 `OS.execute`.
 
+## A game outside this repository
+
+Set `GAI_GAME` to a Godot project outside this clone. `check`, `run`, `editor`,
+`agent`, and `export web` use it. Runtime state goes to `<game>/.gai`.
+
+```sh
+GAI_GAME=/path/to/game bin/gai check
+GAI_GAME=/path/to/game bin/gai check --scene res://level.tscn
+GAI_GAME=/path/to/game bin/gai export web --clean --gzip
+```
+
+Projects with autoloads load every script in a scene, so autoload names
+resolve. `--scene` exercises a gameplay scene when the main scene is only a
+menu. Web export uses the official Godot web template; the agent bridge and
+Steam are not in that runtime.
+
 ## Steam
 
 The engine includes GodotSteam 4.23.2. `Steam` and `SteamProjectSettings` are
@@ -102,8 +119,12 @@ bin/gai steam sdk --download
 
 Without the SDK the engine builds without Steam and prints why. Auto init is off
 by default, so a headless run does not touch Steam. Do not commit
-`modules/godotsteam/sdk/`. GodotSteam rejects LLM-written patches upstream; keep
-changes local.
+`modules/godotsteam/sdk/`.
+
+If a project ships the GodotSteam GDExtension in `addons/godotsteam`, remove it.
+The engine already has Steam built in, and the extension cannot register a
+second `Steam` singleton. `bin/gai check` fails with that message. GodotSteam
+rejects LLM-written patches upstream; keep changes local.
 
 ## The loop
 

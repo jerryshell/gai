@@ -14,6 +14,7 @@
     "docs/gai/build.md",
     "docs/gai/features/agent-bridge.md",
     "docs/gai/features/dotnet-web.md",
+    "docs/gai/features/external-project.md",
     "docs/gai/features/steam.md",
     "docs/gai/upstream.md",
     "game/project.godot",

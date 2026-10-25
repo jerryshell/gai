@@ -39,6 +39,18 @@ If the machine cannot build, `bin/gai engine install` downloads the official
 Godot 4.7.2 binary as a fallback. That binary has no gai display name and no
 agent bridge. `bin/gai bootstrap --official` uses it.
 
+## Use gai with a game outside this repository
+
+Set `GAI_GAME` to a Godot project. `check`, `run`, `editor`, `agent`, and
+`export web` use it. Runtime state stays in `<game>/.gai`, so the engine
+repository stays clean.
+
+```sh
+GAI_GAME=/path/to/game bin/gai check
+GAI_GAME=/path/to/game bin/gai check --scene res://level.tscn
+GAI_GAME=/path/to/game bin/gai export web --clean --gzip
+```
+
 ## What an agent gets
 
 - `AGENTS.md` holds the workflow, the commands, and the Godot rules that agents

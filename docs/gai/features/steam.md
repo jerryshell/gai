@@ -77,6 +77,10 @@ The module is MIT, see `modules/godotsteam/license.md`. The SDK is Valve's and
 is covered by the Steamworks SDK license. gai downloads it but does not
 redistribute it. A gai clone without the SDK still builds and runs.
 
+If a project ships the GodotSteam GDExtension in `addons/godotsteam`, remove it.
+The engine already has Steam built in, and the extension cannot register a
+second `Steam` singleton. `bin/gai check` fails with that message.
+
 GodotSteam does not accept issues or patches written with an LLM. Keep local
 changes local. Never open a pull request or issue upstream with gai changes.
 

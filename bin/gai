@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import gzip
 import hashlib
 import json
 import os
@@ -26,15 +27,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 GAI_DIR = ROOT / ".gai"
-GAME_DIR = ROOT / "game"
+GAI_GAME = os.environ.get("GAI_GAME")
+GAME_DIR = Path(GAI_GAME).expanduser().resolve() if GAI_GAME else ROOT / "game"
+RUNTIME_DIR = GAME_DIR / ".gai" if GAI_GAME else GAI_DIR
 BIN_DIR = GAI_DIR / "bin"
-LOG_DIR = GAI_DIR / "logs"
+LOG_DIR = RUNTIME_DIR / "logs"
 UPSTREAM_FILE = GAI_DIR / "upstream.json"
 FEATURES_DIR = GAI_DIR / "features"
 VERSION_FILE = GAI_DIR / "version"
-AGENT_STATE = GAI_DIR / "agent.json"
-AGENT_LOCK = GAI_DIR / "agent.lock"
-AGENT_LOG = GAI_DIR / "agent.log"
+AGENT_STATE = RUNTIME_DIR / "agent.json"
+AGENT_LOCK = RUNTIME_DIR / "agent.lock"
+AGENT_LOG = RUNTIME_DIR / "agent.log"
 
 STEAM_DIR = ROOT / "modules" / "godotsteam"
 STEAM_SDK = STEAM_DIR / "sdk"
@@ -91,6 +94,13 @@ ERROR_LINE = re.compile(r"^(?:ERROR|SCRIPT ERROR|SHADER ERROR):")
 def die(message: str, code: int = 1) -> None:
     print(f"gai: {message}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def show_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def run(argv, **kwargs):
@@ -434,8 +444,9 @@ def engine_version(engine: Path):
 
 
 def require_game() -> None:
-    if not (GAME_DIR / "project.godot").is_file():
-        die("`game/project.godot` is missing. Restore the starter game from git.")
+    project = GAME_DIR / "project.godot"
+    if not project.is_file():
+        die(f"`{show_path(project)}` is missing. Point `GAI_GAME` at a Godot project, or restore the starter game from git.")
 
 
 def numeric_version(text: str):
@@ -703,7 +714,12 @@ def cmd_bootstrap(args) -> int:
         return 1
 
     require_game()
-    return cmd_check(argparse.Namespace(frames=5, timeout=120))
+    return cmd_check(argparse.Namespace(frames=5, timeout=120, scene=[]))
+
+
+SHUTDOWN_ERRORS = (
+    "resources still in use at exit",
+)
 
 
 def collect_errors(text: str):
@@ -711,8 +727,85 @@ def collect_errors(text: str):
     for line in text.splitlines():
         stripped = line.strip()
         if ERROR_LINE.match(stripped) and stripped not in found:
+            if any(known in stripped for known in SHUTDOWN_ERRORS):
+                continue
             found.append(stripped)
     return found
+
+
+def project_autoloads() -> list[str]:
+    project = GAME_DIR / "project.godot"
+    try:
+        lines = project.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    names = []
+    section = ""
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1]
+        elif section == "autoload" and "=" in stripped and not stripped.startswith(";") and not stripped.startswith("#"):
+            name = stripped.split("=", 1)[0].strip()
+            if name:
+                names.append(name)
+    return names
+
+
+SCRIPT_CHECKER = """extends Node
+
+
+func _ready() -> void:
+	var files: Array[String] = []
+	_collect("res://", files)
+	for path in files:
+		load(path)
+	print("gai-check: ", files.size(), " scripts")
+	get_tree().quit()
+
+
+func _collect(path: String, out: Array[String]) -> void:
+	var dir: DirAccess = DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var name: String = dir.get_next()
+	while name != "":
+		if not name.begins_with("."):
+			var full: String = path.path_join(name)
+			if dir.current_is_dir():
+				_collect(full, out)
+			elif name.ends_with(".gd"):
+				out.append(full)
+		name = dir.get_next()
+	dir.list_dir_end()
+"""
+
+CHECKER_SCENE = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://.gai/check/gai_check.gd" id="1"]
+
+[node name="GaiCheck" type="Node"]
+script = ExtResource("1")
+"""
+
+
+def write_script_checker() -> str:
+    check_dir = GAME_DIR / ".gai" / "check"
+    check_dir.mkdir(parents=True, exist_ok=True)
+    (check_dir / "gai_check.gd").write_text(SCRIPT_CHECKER, encoding="utf-8")
+    (check_dir / "gai_check.tscn").write_text(CHECKER_SCENE, encoding="utf-8")
+    return "res://.gai/check/gai_check.tscn"
+
+
+def remove_script_checker() -> None:
+    check_dir = GAME_DIR / ".gai" / "check"
+    for name in ("gai_check.gd", "gai_check.tscn"):
+        (check_dir / name).unlink(missing_ok=True)
+    try:
+        check_dir.rmdir()
+    except OSError:
+        pass
 
 
 def cmd_check(args) -> int:
@@ -729,67 +822,88 @@ def cmd_check(args) -> int:
     log_path = LOG_DIR / "check.log"
 
     steps = [("import", [engine, "--headless", "--path", GAME_DIR, "--import"])]
-    for script in sorted(GAME_DIR.rglob("*.gd")):
-        relative = script.relative_to(GAME_DIR)
-        if any(part.startswith(".") for part in relative.parts):
-            continue
-        steps.append(
-            (
-                f"script {relative.as_posix()}",
-                [
-                    engine,
-                    "--headless",
-                    "--path",
-                    GAME_DIR,
-                    "--check-only",
-                    "--script",
-                    "res://" + relative.as_posix(),
-                ],
+    preflight = []
+    if (GAME_DIR / "addons" / "godotsteam" / "godotsteam.gdextension").is_file():
+        preflight.append("addons/godotsteam conflicts with the engine's built-in Steam module; remove the addon")
+    autoloads = project_autoloads()
+    checker_scene = None
+    if autoloads:
+        checker_scene = write_script_checker()
+        print(f"check: {len(autoloads)} autoloads, scripts load in a scene", flush=True)
+        steps.append(("scripts", [engine, "--headless", "--path", GAME_DIR, checker_scene]))
+    else:
+        for script in sorted(GAME_DIR.rglob("*.gd")):
+            relative = script.relative_to(GAME_DIR)
+            if any(part.startswith(".") for part in relative.parts):
+                continue
+            steps.append(
+                (
+                    f"script {relative.as_posix()}",
+                    [
+                        engine,
+                        "--headless",
+                        "--path",
+                        GAME_DIR,
+                        "--check-only",
+                        "--script",
+                        "res://" + relative.as_posix(),
+                    ],
+                )
             )
-        )
     steps.append(
         (
             "run",
             [engine, "--headless", "--path", GAME_DIR, "--quit-after", str(args.frames)],
         )
     )
+    for scene in args.scene:
+        steps.append(
+            (
+                f"scene {scene}",
+                [engine, "--headless", "--path", GAME_DIR, "--quit-after", str(args.frames), scene],
+            )
+        )
 
     output = []
-    failures = []
+    failures = list(preflight)
     timed_out = False
-    for name, argv in steps:
-        try:
-            result = run(
-                argv,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=args.timeout,
-            )
-            text = result.stdout or ""
-            output.append(text)
-            errors = collect_errors(text)
-            # The headless editor can abort at shutdown after the import. The run step still checks the assets.
-            shutdown_crash = (
-                name == "import"
-                and result.returncode != 0
-                and bool(errors)
-                and all('singleton" is null' in error for error in errors)
-            )
-            if result.returncode != 0 and not shutdown_crash:
-                failures.append(f"{name}: engine exited with code {result.returncode}")
-            for error in errors:
-                if shutdown_crash and 'singleton" is null' in error:
-                    continue
-                failures.append(error)
-        except subprocess.TimeoutExpired as exc:
-            partial = exc.output or ""
-            if isinstance(partial, bytes):
-                partial = partial.decode("utf-8", errors="replace")
-            output.append(partial)
-            failures.append(f"{name}: timed out after {args.timeout}s")
-            timed_out = True
-            break
+    try:
+        for name, argv in steps:
+            try:
+                result = run(
+                    argv,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=args.timeout,
+                )
+                text = result.stdout or ""
+                output.append(text)
+                errors = collect_errors(text)
+                # The headless editor can abort at shutdown after the import. The run step still checks the assets.
+                shutdown_crash = (
+                    name == "import"
+                    and result.returncode != 0
+                    and bool(errors)
+                    and all('singleton" is null' in error for error in errors)
+                )
+                if result.returncode != 0 and not shutdown_crash:
+                    failures.append(f"{name}: engine exited with code {result.returncode}")
+                for error in errors:
+                    if shutdown_crash and 'singleton" is null' in error:
+                        continue
+                    failures.append(error)
+            except subprocess.TimeoutExpired as exc:
+                partial = exc.output or ""
+                if isinstance(partial, bytes):
+                    partial = partial.decode("utf-8", errors="replace")
+                output.append(partial)
+                failures.append(f"{name}: timed out after {args.timeout}s")
+                timed_out = True
+                break
+    finally:
+        if checker_scene is not None:
+            remove_script_checker()
 
     log_path.write_text("".join(output), encoding="utf-8")
     failures = list(dict.fromkeys(failures))
@@ -801,13 +915,13 @@ def cmd_check(args) -> int:
             print(f"  {line}")
         if len(failures) > 12:
             print(f"  ... and {len(failures) - 12} more")
-        print(f"full log: {log_path.relative_to(ROOT)}")
+        print(f"full log: {show_path(log_path)}")
         return 1
 
     main_scene = read_main_scene()
     print(f"check: ok ({version})")
     print(f"main scene: {main_scene}")
-    print(f"log: {log_path.relative_to(ROOT)}")
+    print(f"log: {show_path(log_path)}")
     return 0
 
 
@@ -827,7 +941,7 @@ def agent_state():
     except FileNotFoundError:
         return None
     except json.JSONDecodeError:
-        die(f"`{AGENT_STATE.relative_to(ROOT)}` is not valid JSON")
+        die(f"`{show_path(AGENT_STATE)}` is not valid JSON")
 
 
 def agent_pid_alive(pid: int) -> bool:
@@ -1013,7 +1127,7 @@ def _cmd_agent_start(args) -> int:
             command.append("--editor")
         process = subprocess.Popen(
             command,
-            cwd=str(ROOT),
+            cwd=str(GAME_DIR),
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=log,
@@ -1544,6 +1658,80 @@ def cmd_upstream_abort(args) -> int:
     return 0
 
 
+def export_templates_dir() -> Path:
+    if platform.system() == "Darwin":
+        base = Path.home() / "Library" / "Application Support" / "Godot"
+    elif platform.system() == "Windows":
+        base = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Godot"
+    else:
+        base = Path.home() / ".local" / "share" / "godot"
+    return base / "export_templates"
+
+
+def engine_template_version(engine) -> str:
+    version = engine_version(engine) or "unknown"
+    return version.split(".custom_build", 1)[0]
+
+
+def cmd_export_web(args) -> int:
+    engine = require_engine()
+    require_game()
+    version = engine_template_version(engine)
+    templates = export_templates_dir() / version
+    if not any((templates / name).is_file() for name in ("web_nothreads_release.zip", "web_release.zip")):
+        print(f"gai: no web export templates for {version} in {templates}")
+        print("gai: download Godot's export templates, then extract templates/web_*.zip and templates/version.txt there.")
+        return 1
+    output = Path(args.output).expanduser()
+    if not output.is_absolute():
+        output = GAME_DIR / output
+    inside_game = output.parent != GAME_DIR and GAME_DIR in output.parents
+    if args.clean and inside_game and output.parent.is_dir():
+        shutil.rmtree(output.parent)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if inside_game:
+        (output.parent / ".gdignore").touch()
+    command = [engine, "--headless", "--path", GAME_DIR, "--export-release", args.preset, str(output)]
+    print(f"gai: exporting {args.preset} to {output}", flush=True)
+    try:
+        result = run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=args.timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"gai: export timed out after {args.timeout}s")
+        return 1
+    text = result.stdout or ""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "export.log"
+    log_path.write_text(text, encoding="utf-8")
+    if result.returncode != 0:
+        for line in text.splitlines()[-12:]:
+            print(line)
+        print(f"gai: export failed; log {show_path(log_path)}")
+        return 1
+    expected = [output, output.with_suffix(".wasm"), output.with_suffix(".pck")]
+    missing = [str(path) for path in expected if not path.is_file()]
+    if missing:
+        for path in missing:
+            print(f"gai: missing {path}")
+        return 1
+    if args.gzip:
+        for suffix in (".html", ".js", ".wasm", ".pck"):
+            source = output.with_suffix(suffix)
+            if source.is_file():
+                with source.open("rb") as src, gzip.open(str(source) + ".gz", "wb", compresslevel=9) as dst:
+                    shutil.copyfileobj(src, dst)
+    files = [path for path in output.parent.iterdir() if path.is_file()]
+    size = sum(path.stat().st_size for path in files)
+    print(f"gai: exported {len(files)} files, {size / (1024 * 1024):.0f} MiB")
+    print(f"gai: log {show_path(log_path)}")
+    return 0
+
+
 def cmd_doctor(args) -> int:
     problems = []
     warnings = []
@@ -1576,7 +1764,7 @@ def cmd_doctor(args) -> int:
         print(f"game {GAME_DIR}")
         print(f"main scene {read_main_scene()}")
     else:
-        problems.append("`game/project.godot` is missing")
+        problems.append(f"`{show_path(GAME_DIR / 'project.godot')}` is missing")
 
     if steam_sdk_ready():
         print(f"steam sdk {steam_sdk_version() or 'unknown'}")
@@ -1648,11 +1836,21 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("check", help="import assets, parse every script, and run the main scene")
     check.add_argument("--frames", type=int, default=5, help="frames to run (default: 5)")
     check.add_argument("--timeout", type=int, default=120, help="seconds per step (default: 120)")
+    check.add_argument("--scene", action="append", default=[], help="run an extra scene, such as res://view/game_level_1/game_level_1.tscn")
     check.set_defaults(func=cmd_check)
 
     run_cmd = sub.add_parser("run", help="run the game")
     run_cmd.add_argument("extra", nargs=argparse.REMAINDER, help="arguments for the engine")
     run_cmd.set_defaults(func=cmd_run)
+    export_cmd = sub.add_parser("export", help="export the game")
+    export_sub = export_cmd.add_subparsers(dest="export_target", required=True)
+    export_web = export_sub.add_parser("web", help="export a web build")
+    export_web.add_argument("--preset", default="Web", help="export preset name")
+    export_web.add_argument("--output", default="build/web/index.html", help="output html path")
+    export_web.add_argument("--clean", action="store_true", help="remove the output directory first")
+    export_web.add_argument("--gzip", action="store_true", help="write .gz files for static hosting")
+    export_web.add_argument("--timeout", type=int, default=900, help="export timeout in seconds")
+    export_web.set_defaults(func=cmd_export_web)
 
     editor = sub.add_parser("editor", help="open the game in the Godot editor")
     editor.set_defaults(func=cmd_editor)
