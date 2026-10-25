@@ -45,7 +45,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev libfontconfig1-dev libdbus-1-dev libwayland-dev libenet-dev lld scons
+      - name: Install the Steamworks SDK
+        run: python3 bin/gai steam sdk --download
       - name: Build the engine
         run: scons platform=linuxbsd target=editor dev_build=no accesskit=no linker=lld -j4
+      - name: Copy the Steam runtime library
+        run: python3 bin/gai steam runtime
       - name: Test the agent bridge
         run: python3 tests/test_agent.py
+      - name: Test the Steam module
+        run: python3 tests/test_steam.py

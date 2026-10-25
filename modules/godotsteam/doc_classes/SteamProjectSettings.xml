@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="SteamProjectSettings" inherits="Object" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Project settings affecting how GodotSteam functions internally.
+	</brief_description>
+	<description>
+		These functions and properties affect how GodotSteam functions internally.  Most of them deal with app IDs but also initialization processes, callbacks, and some debugging.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="get_id_in_use">
+			<return type="int" />
+			<description>
+				Returns the current app ID in use. This is based on the value of [member SteamProjectSettings.app_type].
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="app_id" type="int" setter="set_app_id" getter="get_app_id" default="0">
+			The base app ID for a game or application on Steam.
+		</member>
+		<member name="app_type" type="int" setter="set_app_type" getter="get_app_type" default="0">
+			The type of app this project is; one of the following possible types: application / game, demo, Steam playtest, or tool. GodotSteam will use the app ID for this type.
+		</member>
+		<member name="auto_init" type="bool" getter="get_auto_init" default="false">
+			Initialize Steamworks early in the boot-up chain.  Can fix Steam overlay issues when running the project from the editor for some people.
+		</member>
+		<member name="demo_id" type="int" setter="set_demo_id" getter="get_demo_id" default="0">
+			The app ID for a game or application's demo.
+		</member>
+		<member name="embed_callbacks" type="bool" getter="get_embed_callbacks" default="false">
+			Whether or not to embed Steam callbacks to work automatically.  If this is enabled, you do not need to call [method Steam.run_callbacks] in your code.
+		</member>
+		<member name="enable_debug" type="bool" setter="set_enable_debug" getter="get_enable_debug" default="false">
+			Whether or not to enable Steamworks debugging included API warning handling through [url=https://partner.steamgames.com/doc/api/ISteamUtils#SetWarningMessageHook] SetWarningMessageHook[/url].
+		</member>
+		<member name="max_channels" type="int" setter="set_max_channels" getter="get_max_channels" default="4">
+			The maximum number of channels to use with SteamPacketPeer.
+		</member>
+		<member name="playtest_id" type="int" setter="set_playtest_id" getter="get_playtest_id" default="0">
+			The app ID for a game or application's Steam playtest.
+		</member>
+		<member name="tool_id" type="int" setter="set_tool_id" getter="get_tool_id" default="0">
+			The app ID for a game or application's tool such as level or workshop editors.
+		</member>
+	</members>
+</class>

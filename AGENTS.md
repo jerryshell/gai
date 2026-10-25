@@ -46,6 +46,7 @@ Run these from the repository root.
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
 | `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. |
+| `bin/gai steam status` | Shows the Steam module, the SDK, and the runtime library. |
 | `bin/gai engine install` | Downloads the official fallback engine into `.gai/bin/`. It has no gai features. |
 | `bin/gai upstream check` | Warns when an engine change has no feature owner; `--strict` fails. |
 | `bin/gai upstream report` | Lists features, changed paths, and unclaimed paths. |
@@ -86,6 +87,23 @@ singleton. In editor mode `run.*`, `scene.change`, and `input.*` need
 `force: true`; `scene.tree` returns the edited scene when one is open. Add
 `--display` for screenshots. The token holder has full local access, including
 `OS.execute`.
+
+## Steam
+
+The engine includes GodotSteam 4.23.2. `Steam` and `SteamProjectSettings` are
+native singletons, so the bridge reaches them through `classdb.*` and
+`object.*`. The Steamworks SDK 1.65 is installed separately and is never
+committed:
+
+```sh
+bin/gai steam status
+bin/gai steam sdk --download
+```
+
+Without the SDK the engine builds without Steam and prints why. Auto init is off
+by default, so a headless run does not touch Steam. Do not commit
+`modules/godotsteam/sdk/`. GodotSteam rejects LLM-written patches upstream; keep
+changes local.
 
 ## The loop
 

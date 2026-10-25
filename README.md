@@ -53,6 +53,10 @@ agent bridge. `bin/gai bootstrap --official` uses it.
   handles, plus scene, node, resource, project, run, input, and screenshot
   methods. `agent call` reaches any method. The gai source build includes it;
   the official fallback does not.
+- `bin/gai steam` builds [GodotSteam](https://godotsteam.com) into the engine.
+  `Steam` is a native singleton, so the bridge reaches it like any other class.
+  The Steamworks SDK is installed separately and is not committed. Design:
+  `docs/gai/features/steam.md`.
 - `game/` holds a small 2D scene that runs. Replace it.
 
 ## Deep fork, not a thin layer

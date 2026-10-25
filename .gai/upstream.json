@@ -14,11 +14,15 @@
     "docs/gai/build.md",
     "docs/gai/features/agent-bridge.md",
     "docs/gai/features/dotnet-web.md",
+    "docs/gai/features/steam.md",
     "docs/gai/upstream.md",
     "game/project.godot",
     "game/scenes/main.tscn",
     "game/scripts/main.gd",
+    "modules/godotsteam/UPSTREAM.md",
+    "modules/godotsteam/config.py",
     "tests/test_check.py",
+    "tests/test_steam.py",
     "tests/test_upstream.py",
     "version.py"
   ]

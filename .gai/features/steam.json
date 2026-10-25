@@ -1,0 +1,15 @@
+{
+  "title": "Steam",
+  "status": "active",
+  "risk": "medium",
+  "paths": [
+    "modules/godotsteam/"
+  ],
+  "docs": [
+    "docs/gai/features/steam.md"
+  ],
+  "tests": [
+    "tests/test_steam.py"
+  ],
+  "notes": "GodotSteam 4.23.2 as an engine module. Steam and SteamProjectSettings are native singletons, so ClassDB and the agent bridge see them. The Steamworks SDK 1.65 is installed separately and is not committed."
+}

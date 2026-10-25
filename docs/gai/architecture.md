@@ -101,3 +101,5 @@ does not match the base tag. This is the game gate.
   need a display.
 - The bridge token grants full local access, including `OS.execute`. It is not a
   sandbox.
+- Steam is a native module. The Steamworks SDK is installed separately and is
+  not committed. A clone without it builds and runs without Steam.

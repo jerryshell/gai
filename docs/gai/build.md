@@ -86,11 +86,25 @@ Start the editor or the game. The window title and the startup header use the
 ./bin/godot.linuxbsd.editor.x86_64 --path game --editor
 ```
 
+## Steam
+
+The engine includes GodotSteam when the Steamworks SDK is installed:
+
+```sh
+bin/gai steam sdk --download
+scons platform=linuxbsd target=editor dev_build=no linker=lld accesskit=no -j2
+```
+
+The SDK is Valve's and is not committed. Without it, the build skips the module
+and says so. `bin/gai steam status` reports the SDK and the runtime library.
+The module links `libsteam_api.so` with an `$ORIGIN` runtime path, so the library
+must sit next to the editor binary. `bin/gai` copies it there.
+
 ## Build gate for engine features
 
 `bin/gai check` tests the game, not the engine. An engine change needs an editor
-build and the feature tests before you commit. The current CI does not build the
-engine yet. That is the next infrastructure piece.
+build and the feature tests before you commit. CI builds the editor and runs the
+agent and Steam tests in the `engine` job.
 
 ## .NET web export
 

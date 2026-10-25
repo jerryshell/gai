@@ -16,6 +16,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.request
@@ -35,6 +36,30 @@ AGENT_STATE = GAI_DIR / "agent.json"
 AGENT_LOCK = GAI_DIR / "agent.lock"
 AGENT_LOG = GAI_DIR / "agent.log"
 
+STEAM_DIR = ROOT / "modules" / "godotsteam"
+STEAM_SDK = STEAM_DIR / "sdk"
+STEAM_SDK_VERSION = "1.65"
+STEAM_SDK_COMMIT = "df2baabf574a738ef1ea90a7e89339107fc0a279"
+STEAM_SDK_URL = f"https://codeload.github.com/rlabrecque/SteamworksSDK/tar.gz/{STEAM_SDK_COMMIT}"
+STEAM_SDK_SHA256 = "4df87731a1179f20a9253a4348f6bd8381a8e46e5e3dc58f9db705ef200eea61"
+STEAM_FILES = (
+    "godotsteam.cpp",
+    "godotsteam.h",
+    "godotsteam_constants.h",
+    "godotsteam_enums.h",
+    "godotsteam_multiplayer_peer.cpp",
+    "godotsteam_multiplayer_peer.h",
+    "godotsteam_project_settings.cpp",
+    "godotsteam_project_settings.h",
+    "register_types.cpp",
+    "register_types.h",
+    "steam_packet_peer.cpp",
+    "steam_packet_peer.h",
+    "SCsub",
+    "config.py",
+    "license.md",
+)
+
 WORKSPACE_PREFIXES = (".agents/", ".gai/", ".github/", "bin/", "docs/gai/", "game/")
 WORKSPACE_FILES = (
     ".gitignore",
@@ -43,6 +68,7 @@ WORKSPACE_FILES = (
     "README.md",
     "tests/test_agent.py",
     "tests/test_check.py",
+    "tests/test_steam.py",
     "tests/test_upstream.py",
 )
 
@@ -167,7 +193,225 @@ def require_engine() -> Path:
             "no engine found. Run `bin/gai bootstrap` to build it, "
             "or `bin/gai engine install` for the official fallback."
         )
+    ensure_steam_runtime(engine)
     return engine
+
+
+def steam_library():
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Linux":
+        folder = "linuxarm64" if machine in ("aarch64", "arm64") else "linux64"
+        name = "libsteam_api.so"
+    elif system == "Darwin":
+        folder, name = "osx", "libsteam_api.dylib"
+    elif system == "Windows":
+        folder, name = "win64", "steam_api64.dll"
+    else:
+        return None
+    path = STEAM_SDK / "redistributable_bin" / folder / name
+    return path if path.is_file() else None
+
+
+def steam_sdk_ready() -> bool:
+    return (STEAM_SDK / "public" / "steam" / "steam_api_flat.h").is_file()
+
+
+def steam_sdk_version():
+    readme = STEAM_SDK / "Readme.txt"
+    if not readme.is_file():
+        return None
+    match = re.search(r"^v([0-9.]+)", readme.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def engine_has_steam(engine) -> bool:
+    needle = b"steamInitEx"
+    tail = b""
+    try:
+        with engine.open("rb") as handle:
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    return False
+                if needle in tail + chunk:
+                    return True
+                tail = chunk[-len(needle):]
+    except OSError:
+        return False
+
+
+def ensure_steam_runtime(engine) -> None:
+    source = steam_library()
+    if source is None or BIN_DIR in engine.parents:
+        return
+    target = engine.parent / source.name
+    try:
+        if target.is_file() and target.stat().st_size == source.stat().st_size:
+            return
+        shutil.copy2(source, target)
+    except OSError as error:
+        print(f"gai: could not copy {source.name} next to the engine: {error}", file=sys.stderr)
+
+
+def steam_sdk_source(value: str, workdir: Path):
+    source = Path(value).expanduser()
+    if source.is_file() and zipfile.is_zipfile(source):
+        with zipfile.ZipFile(source) as archive:
+            archive.extractall(workdir / "sdk")
+        source = workdir / "sdk"
+    if not source.is_dir():
+        die(f"not a directory or zip: {value}")
+    candidates = [source, *(child for child in source.iterdir() if child.is_dir())]
+    for candidate in candidates:
+        if (candidate / "public" / "steam" / "steam_api_flat.h").is_file():
+            return candidate
+    die(f"no Steamworks SDK found in {value}. Keep the zip intact, or point at the folder that holds `public/`.")
+
+
+def install_steam_sdk(source: Path) -> None:
+    STEAM_SDK.mkdir(parents=True, exist_ok=True)
+    for name in ("public", "redistributable_bin"):
+        target = STEAM_SDK / name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source / name, target)
+    for name in ("Readme.txt", "steam_api.h"):
+        candidate = source / name
+        if candidate.is_file():
+            shutil.copy2(candidate, STEAM_SDK / name)
+    version = steam_sdk_version() or "unknown"
+    if version not in ("unknown", STEAM_SDK_VERSION):
+        print(f"gai: warning: SDK {version} is not the expected {STEAM_SDK_VERSION}")
+    library = steam_library()
+    print(f"gai: Steamworks SDK {version} installed in {STEAM_SDK.relative_to(ROOT)}")
+    if library is None:
+        print("gai: this SDK has no library for this platform")
+    else:
+        print(f"gai: runtime library {library.relative_to(ROOT)}")
+
+
+def cmd_steam_status(args) -> int:
+    commit = "unknown"
+    upstream = STEAM_DIR / "UPSTREAM.md"
+    if upstream.is_file():
+        match = re.search(r"commit\s+`([0-9a-f]+)`", upstream.read_text(encoding="utf-8"))
+        if match:
+            commit = match.group(1)[:8]
+    print(f"module {STEAM_DIR.relative_to(ROOT)} (upstream {commit})")
+    print(f"sdk {'yes' if steam_sdk_ready() else 'missing'}")
+    if steam_sdk_ready():
+        print(f"sdk version {steam_sdk_version() or 'unknown'}")
+        library = steam_library()
+        print(f"sdk library {library.relative_to(ROOT) if library else 'missing for this platform'}")
+    engine = find_engine()
+    if engine is not None:
+        library = steam_library()
+        present = library is not None and (engine.parent / library.name).is_file()
+        print(f"engine {engine}")
+        print(f"engine built with steam {'yes' if engine_has_steam(engine) else 'no'}")
+        print(f"runtime library {'yes' if present else 'no'}")
+    if not steam_sdk_ready():
+        print("next: bin/gai steam sdk --download")
+        return 1
+    return 0
+
+
+def cmd_steam_sdk(args) -> int:
+    print("gai: the Steamworks SDK is Valve's and is covered by the Steamworks SDK license.")
+    print("gai: gai does not redistribute it. Using the SDK means you accept Valve's terms.")
+    if args.download:
+        with tempfile.TemporaryDirectory() as temp:
+            workdir = Path(temp)
+            archive = workdir / "sdk.tar.gz"
+            print(f"gai: downloading Steamworks SDK {STEAM_SDK_VERSION} from the pinned mirror")
+            try:
+                with urllib.request.urlopen(STEAM_SDK_URL, timeout=120) as response:
+                    data = response.read()
+                digest = hashlib.sha256(data).hexdigest()
+                if digest != STEAM_SDK_SHA256:
+                    die(f"the downloaded SDK has the wrong checksum: {digest}")
+                archive.write_bytes(data)
+            except OSError as error:
+                die(f"download failed: {error}. Use `--from` with an SDK you downloaded from Valve.")
+            with tarfile.open(archive, "r:gz") as bundle:
+                try:
+                    bundle.extractall(workdir / "unpacked", filter="data")
+                except TypeError:
+                    bundle.extractall(workdir / "unpacked")
+            source = next((path for path in (workdir / "unpacked").iterdir() if path.is_dir()), None)
+            if source is None:
+                die("the downloaded archive is empty")
+            install_steam_sdk(source)
+    elif args.from_path:
+        with tempfile.TemporaryDirectory() as temp:
+            install_steam_sdk(steam_sdk_source(args.from_path, Path(temp)))
+    else:
+        die("pass `--download` or `--from <path>`")
+    return 0
+
+
+def cmd_steam_runtime(args) -> int:
+    engine = find_engine()
+    if engine is None:
+        die("no engine found. Run `bin/gai bootstrap` first.")
+    ensure_steam_runtime(engine)
+    library = steam_library()
+    if library is None:
+        die("no Steamworks runtime library for this platform")
+    print(f"gai: {library.name} is next to {engine}")
+    return 0
+
+
+def cmd_steam_vendor(args) -> int:
+    source = Path(args.from_path).expanduser()
+    if not source.is_dir():
+        die(f"not a directory: {source}")
+    patch_tool = shutil.which("patch")
+    if patch_tool is None:
+        die("`patch` is not installed")
+    with tempfile.TemporaryDirectory() as temp:
+        staging = Path(temp) / "module"
+        staging.mkdir()
+        for name in STEAM_FILES:
+            candidate = source / name
+            if candidate.is_file():
+                shutil.copy2(candidate, staging / name)
+        if (source / "doc_classes").is_dir():
+            shutil.copytree(source / "doc_classes", staging / "doc_classes")
+        patch_file = STEAM_DIR / "gai.patch"
+        result = subprocess.run(
+            [patch_tool, "-p1", "--forward", "-i", str(patch_file)],
+            cwd=staging,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if result.returncode != 0:
+            die(f"`gai.patch` does not apply. Update it, then run the command again.\n{result.stdout.strip()}")
+        for name in STEAM_FILES:
+            candidate = staging / name
+            if candidate.is_file():
+                shutil.copy2(candidate, STEAM_DIR / name)
+        target = STEAM_DIR / "doc_classes"
+        if (staging / "doc_classes").is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(staging / "doc_classes", target)
+    commit = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ).stdout.strip()
+    readme = STEAM_DIR / "UPSTREAM.md"
+    if readme.is_file() and commit:
+        text = readme.read_text(encoding="utf-8")
+        text = re.sub(r"(commit\s+`)[0-9a-f]+(`)", rf"\g<1>{commit}\g<2>", text, count=1)
+        readme.write_text(text, encoding="utf-8")
+    print(f"gai: vendored GodotSteam {commit[:8] if commit else 'from a plain directory'}")
+    print("gai: rebuild with `bin/gai bootstrap`")
+    return 0
 
 
 def engine_version(engine: Path):
@@ -429,6 +673,12 @@ def cmd_bootstrap(args) -> int:
 
     print(f"gai: engine {engine_version(engine) or 'unknown'}", flush=True)
     os.environ["GAI_GODOT"] = str(engine)
+    if engine and BIN_DIR not in engine.parents:
+        if not steam_sdk_ready():
+            print("gai: Steam is not in this build. Run `bin/gai steam sdk --download`, then `bin/gai bootstrap` again.", flush=True)
+        elif not engine_has_steam(engine):
+            command = " ".join(str(part) for part in build_engine_command())
+            print(f"gai: the Steamworks SDK is installed but this engine predates it. Rebuild with `{command}`.", flush=True)
 
     problems = version_problems(engine, state)
     downloaded = BIN_DIR in engine.parents
@@ -1326,6 +1576,11 @@ def cmd_doctor(args) -> int:
     else:
         problems.append("`game/project.godot` is missing")
 
+    if steam_sdk_ready():
+        print(f"steam sdk {steam_sdk_version() or 'unknown'}")
+    else:
+        print("steam sdk missing (the engine builds without Steam)")
+
     engine = find_engine()
     if engine is None:
         problems.append(
@@ -1446,6 +1701,20 @@ def build_parser() -> argparse.ArgumentParser:
     install.set_defaults(func=cmd_engine_install)
     engine_path = engine_sub.add_parser("path", help="print the engine path")
     engine_path.set_defaults(func=cmd_engine_path)
+
+    steam = sub.add_parser("steam", help="manage the GodotSteam module and the Steamworks SDK")
+    steam_sub = steam.add_subparsers(dest="steam_command", required=True)
+    steam_status = steam_sub.add_parser("status", help="show the module, the SDK, and the runtime library")
+    steam_status.set_defaults(func=cmd_steam_status)
+    steam_sdk = steam_sub.add_parser("sdk", help="install the Steamworks SDK")
+    steam_sdk.add_argument("--download", action="store_true", help="download the pinned SDK from a public mirror")
+    steam_sdk.add_argument("--from", dest="from_path", help="a Steamworks SDK folder or zip")
+    steam_sdk.set_defaults(func=cmd_steam_sdk)
+    steam_runtime = steam_sub.add_parser("runtime", help="copy the Steam library next to the engine")
+    steam_runtime.set_defaults(func=cmd_steam_runtime)
+    steam_vendor = steam_sub.add_parser("vendor", help="refresh modules/godotsteam from a checkout")
+    steam_vendor.add_argument("--from", dest="from_path", required=True, help="a GodotSteam checkout")
+    steam_vendor.set_defaults(func=cmd_steam_vendor)
 
     upstream = sub.add_parser("upstream", help="track godotengine/godot")
     upstream_sub = upstream.add_subparsers(dest="upstream_command", required=True)
