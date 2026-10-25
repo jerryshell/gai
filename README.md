@@ -1,76 +1,76 @@
-# Godot Engine
+# gai
 
-<p align="center">
-  <a href="https://godotengine.org">
-    <img src="misc/logo/logo_outlined.svg" width="400" alt="Godot Engine logo">
-  </a>
-</p>
+Godot, but AI Native.
 
-## 2D and 3D cross-platform game engine
+gai is a fork of Godot 4.7.2 that you clone as your game. The engine source is
+here, a starter game is in `game/`, and pi or opencode can work on it from the
+first minute.
 
-**[Godot Engine](https://godotengine.org) is a feature-packed, cross-platform
-game engine to create 2D and 3D games from a unified interface.** It provides a
-comprehensive set of [common tools](https://godotengine.org/features), so that
-users can focus on making games without having to reinvent the wheel. Games can
-be exported with one click to a number of platforms, including the major desktop
-platforms (Linux, macOS, Windows), mobile platforms (Android, iOS), as well as
-Web-based platforms and [consoles](https://godotengine.org/consoles).
+## Start
 
-## Free, open source and community-driven
+```sh
+git clone git@github.com:jerryshell/gai.git my-game
+cd my-game
+bin/gai engine install
+bin/gai check
+bin/gai editor
+```
 
-Godot is completely free and open source under the very permissive [MIT license](https://godotengine.org/license).
-No strings attached, no royalties, nothing. The users' games are theirs, down
-to the last line of engine code. Godot's development is fully independent and
-community-driven, empowering users to help shape their engine to match their
-expectations. It is supported by the [Godot Foundation](https://godot.foundation/)
-not-for-profit.
+Then open `my-game` in pi or opencode and describe the game you want. The agent
+reads `AGENTS.md` and works in `game/`.
 
-Before being open sourced in [February 2014](https://github.com/godotengine/godot/commit/0b806ee0fc9097fa7bda7ac0109191c9c5e0a1ac),
-Godot had been developed by [Juan Linietsky](https://github.com/reduz) and
-[Ariel Manzur](https://github.com/punto-) for several years as an in-house
-engine, used to publish several work-for-hire titles.
+`bin/gai engine install` downloads the official Godot 4.7.2 binary (about 140 MB)
+and checks its SHA-512. The clone carries the full Godot history, about 1.2 GB in
+`.git`. That history is what makes upstream merges cheap.
 
-![Screenshot of a 3D scene in the Godot Engine editor](https://raw.githubusercontent.com/godotengine/godot-design/master/screenshots/editor_tps_demo_1920x1080.jpg)
+On Windows, run `python bin/gai` in place of `bin/gai`.
 
-## Getting the engine
+## What an agent gets
 
-### Binary downloads
+- `AGENTS.md` holds the workflow, the commands, and the Godot rules that agents
+  get wrong.
+- `.agents/skills/godot-game/` holds scene formats, GDScript patterns, and an
+  error catalog. Pi and other Agent Skills tools load it when a task needs it.
+- `bin/gai check` imports assets, parses every script, runs the main scene, and
+  fails on errors. Godot exits 0 on a script error. This command does not.
+- `game/` holds a small 2D scene that runs. Replace it.
 
-Official binaries for the Godot editor and the export templates can be found
-[on the Godot website](https://godotengine.org/download).
+## What is here
 
-### Compiling from source
+| Path | What it is |
+| --- | --- |
+| `game/` | Your Godot project. |
+| engine source | Godot 4.7.2-stable, unchanged except the display name and project URL. |
+| `.gai/` | gai metadata: version, upstream base, layer rules. |
+| `bin/gai` | The command line. Python 3, no dependencies. |
+| `docs/gai/` | Architecture, upstream sync, build, and decisions. |
 
-[See the official docs](https://docs.godotengine.org/en/latest/engine_details/development/compiling)
-for compilation instructions for every supported platform.
+## Stay close to upstream
 
-## Community and contributing
+The engine tracks `godotengine/godot`. The base is recorded in
+`.gai/upstream.json`. To move to a new release:
 
-Godot is not only an engine but an ever-growing community of users and engine
-developers. The main community channels are listed [on the homepage](https://godotengine.org/community).
+```sh
+bin/gai upstream merge 4.8-stable
+bin/gai engine install --force
+bin/gai check
+```
 
-The best way to get in touch with the core engine developers is to join the
-[Godot Contributors Chat](https://chat.godotengine.org).
+Conflicts can appear only in the files the layer edits: `README.md`,
+`version.py`, and `.gitignore`. The tool prints the policy for each.
+`bin/gai upstream check` fails when a commit changes any other upstream file, so
+the layer cannot grow by accident.
 
-To get started contributing to the project, see the [contributing guide](CONTRIBUTING.md).
-This document also includes guidelines for reporting bugs.
+Read `docs/gai/upstream.md` before you sync.
 
-## Documentation and demos
+## Status
 
-The official documentation is hosted on [Read the Docs](https://docs.godotengine.org).
-It is maintained by the Godot community in its own [GitHub repository](https://github.com/godotengine/godot-docs).
+Version 0.1.0. The display name is gai. Internal identifiers and the binary name
+stay `godot` so upstream merges stay cheap. The editor icon, splash, and UI
+strings are still Godot. There is no in-editor AI panel.
 
-The [class reference](https://docs.godotengine.org/en/latest/classes/)
-is also accessible from the Godot editor.
+gai is not affiliated with the Godot Foundation. See `NOTICE.md`.
 
-We also maintain official demos in their own [GitHub repository](https://github.com/godotengine/godot-demo-projects)
-as well as a list of [awesome Godot community resources](https://github.com/godotengine/awesome-godot).
+## License
 
-There are also a number of other
-[learning resources](https://docs.godotengine.org/en/latest/community/tutorials.html)
-provided by the community, such as text and video tutorials, demos, etc.
-Consult the [community channels](https://godotengine.org/community)
-for more information.
-
-[![Code Triagers Badge](https://www.codetriage.com/godotengine/godot/badges/users.svg)](https://www.codetriage.com/godotengine/godot)
-[![Translate on Weblate](https://hosted.weblate.org/widgets/godot-engine/-/godot/svg-badge.svg)](https://hosted.weblate.org/engage/godot-engine/?utm_source=widget)
+MIT, like Godot. See `LICENSE.txt`.
