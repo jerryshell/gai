@@ -1,0 +1,29 @@
+name: gai
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  layer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the gai layer
+        run: python3 bin/gai upstream check
+      - name: Test the upstream tools
+        run: python3 tests/test_upstream.py
+
+  game:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the engine
+        run: python3 bin/gai engine install
+      - name: Check the starter game
+        run: python3 bin/gai check

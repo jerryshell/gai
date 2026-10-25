@@ -1,0 +1,692 @@
+#!/usr/bin/env python3
+"""gai: one command line for the engine, the game, and upstream."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+import zipfile
+from datetime import date
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+GAI_DIR = ROOT / ".gai"
+GAME_DIR = ROOT / "game"
+BIN_DIR = GAI_DIR / "bin"
+LOG_DIR = GAI_DIR / "logs"
+UPSTREAM_FILE = GAI_DIR / "upstream.json"
+VERSION_FILE = GAI_DIR / "version"
+
+DEFAULT_UPSTREAM = "https://github.com/godotengine/godot.git"
+RELEASE_BASE = "https://github.com/godotengine/godot/releases/download/{tag}/{name}"
+CHECKSUM_NAME = "SHA512-SUMS.txt"
+
+# (system, machine) -> (release asset suffix, member in the zip, installed name, is app bundle)
+RELEASES = {
+    ("linux", "x86_64"): ("linux.x86_64.zip", "Godot_v{tag}_linux.x86_64", "godot", False),
+    ("linux", "amd64"): ("linux.x86_64.zip", "Godot_v{tag}_linux.x86_64", "godot", False),
+    ("darwin", "x86_64"): ("macos.universal.zip", "Godot.app/Contents/MacOS/Godot", "Godot.app", True),
+    ("darwin", "arm64"): ("macos.universal.zip", "Godot.app/Contents/MacOS/Godot", "Godot.app", True),
+    ("windows", "amd64"): ("win64.exe.zip", "Godot_v{tag}_win64.exe", "godot.exe", False),
+}
+
+ERROR_LINE = re.compile(r"^(?:ERROR|SCRIPT ERROR):")
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"gai: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def run(argv, **kwargs):
+    return subprocess.run([str(item) for item in argv], **kwargs)
+
+
+def git(*args: str, check: bool = True):
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        die(f"git {' '.join(args)} failed: {detail}")
+    return result
+
+
+def load_upstream() -> dict:
+    try:
+        state = json.loads(UPSTREAM_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        die("`.gai/upstream.json` is missing")
+    except json.JSONDecodeError as exc:
+        die(f"`.gai/upstream.json` is not valid JSON: {exc}")
+    return state
+
+
+def save_upstream(state: dict) -> None:
+    UPSTREAM_FILE.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def gai_version() -> str:
+    try:
+        return VERSION_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return "unknown"
+
+
+def built_engine():
+    bin_path = ROOT / "bin"
+    if not bin_path.is_dir():
+        return None
+    found = [
+        path
+        for path in bin_path.iterdir()
+        if path.is_file()
+        and path.name.startswith("godot.")
+        and ".editor." in path.name
+        and ".console." not in path.name
+    ]
+    if not found:
+        return None
+    found.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return found[0]
+
+
+def find_engine():
+    candidates = []
+    override = os.environ.get("GAI_GODOT")
+    if override:
+        candidates.append(Path(override).expanduser())
+    built = built_engine()
+    if built:
+        candidates.append(built)
+    candidates.extend(
+        [
+            BIN_DIR / "godot",
+            BIN_DIR / "godot.exe",
+            BIN_DIR / "Godot.app" / "Contents" / "MacOS" / "Godot",
+        ]
+    )
+    for name in ("godot", "godot4"):
+        located = shutil.which(name)
+        if located:
+            candidates.append(Path(located))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def require_engine() -> Path:
+    engine = find_engine()
+    if engine is None:
+        die("no engine found. Run `bin/gai engine install`, or set `GAI_GODOT`.")
+    return engine
+
+
+def engine_version(engine: Path):
+    try:
+        result = run(
+            [engine, "--version"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.strip().splitlines()
+    return lines[0] if lines else None
+
+
+def require_game() -> None:
+    if not (GAME_DIR / "project.godot").is_file():
+        die("`game/project.godot` is missing. Restore the starter game from git.")
+
+
+def release_for_host():
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    key = (system, machine)
+    if key not in RELEASES:
+        die(
+            f"no official Godot binary for {system}/{machine}. Build from source "
+            "(`docs/gai/build.md`) and point `GAI_GODOT` at the binary."
+        )
+    return RELEASES[key]
+
+
+def sha512_of(path: Path) -> str:
+    digest = hashlib.sha512()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def expected_checksum(asset: str, tag: str) -> str:
+    url = RELEASE_BASE.format(tag=tag, name=CHECKSUM_NAME)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except OSError as exc:
+        die(f"cannot download {url}: {exc}")
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].lstrip("*") == asset:
+            return parts[0].lower()
+    die(f"{asset} is not listed in {url}")
+
+
+def download(url: str, target: Path) -> None:
+    request = urllib.request.Request(url, headers={"User-Agent": "gai"})
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            with target.open("wb") as handle:
+                shutil.copyfileobj(response, handle)
+    except OSError as exc:
+        die(f"download failed: {exc}")
+
+
+def extract_member(archive: Path, member: str, target: Path) -> None:
+    with zipfile.ZipFile(archive) as bundle:
+        try:
+            data = bundle.read(member)
+        except KeyError:
+            die(f"`{member}` is not in {archive.name}")
+    target.write_bytes(data)
+    target.chmod(0o755)
+
+
+def extract_tree(archive: Path, source: str, target: Path) -> None:
+    with zipfile.ZipFile(archive) as bundle:
+        for info in bundle.infolist():
+            name = Path(info.filename)
+            if name.is_absolute() or ".." in name.parts:
+                die(f"refusing unsafe zip member: {info.filename}")
+        bundle.extractall(target.parent / (target.name + ".tmp"))
+    app = target.parent / (target.name + ".tmp") / source
+    if not app.exists():
+        die(f"`{source}` is not in {archive.name}")
+    shutil.move(str(app), str(target))
+    binary = target / "Contents" / "MacOS" / "Godot"
+    if binary.exists():
+        binary.chmod(0o755)
+
+
+def cmd_engine_install(args) -> int:
+    state = load_upstream()
+    tag = state["tag"]
+    suffix, member_template, installed, is_bundle = release_for_host()
+    asset = f"Godot_v{tag}_{suffix}"
+    member = member_template.format(tag=tag)
+    target = BIN_DIR / installed
+
+    if target.exists() and not args.force:
+        die(f"`{target}` already exists. Use `--force` to replace it.")
+
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=".install-", dir=str(GAI_DIR)))
+    try:
+        archive = work / asset
+        print(f"downloading {asset}")
+        download(RELEASE_BASE.format(tag=tag, name=asset), archive)
+        print("verifying sha512")
+        actual = sha512_of(archive)
+        expected = expected_checksum(asset, tag)
+        if actual != expected:
+            die(f"checksum mismatch for {asset}\n  expected {expected}\n  actual   {actual}")
+
+        if is_bundle:
+            if target.exists():
+                shutil.rmtree(target)
+            extract_tree(archive, "Godot.app", target)
+            binary = target / "Contents" / "MacOS" / "Godot"
+        else:
+            staging = work / "staged"
+            extract_member(archive, member, staging)
+            shutil.move(str(staging), str(target))
+            binary = target
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    version = engine_version(binary)
+    print(f"installed {binary}")
+    print(f"engine {version or 'unknown'}")
+    return 0
+
+
+def cmd_engine_path(args) -> int:
+    print(require_engine())
+    return 0
+
+
+def collect_errors(text: str):
+    found = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if ERROR_LINE.match(stripped) and stripped not in found:
+            found.append(stripped)
+    return found
+
+
+def cmd_check(args) -> int:
+    engine = require_engine()
+    require_game()
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "check.log"
+
+    steps = [("import", [engine, "--headless", "--path", GAME_DIR, "--import"])]
+    for script in sorted(GAME_DIR.rglob("*.gd")):
+        relative = script.relative_to(GAME_DIR)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        steps.append(
+            (
+                f"script {relative.as_posix()}",
+                [
+                    engine,
+                    "--headless",
+                    "--path",
+                    GAME_DIR,
+                    "--check-only",
+                    "--script",
+                    "res://" + relative.as_posix(),
+                ],
+            )
+        )
+    steps.append(
+        (
+            "run",
+            [engine, "--headless", "--path", GAME_DIR, "--quit-after", str(args.frames)],
+        )
+    )
+
+    output = []
+    failures = []
+    timed_out = False
+    for name, argv in steps:
+        try:
+            result = run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=args.timeout,
+            )
+            text = result.stdout or ""
+            output.append(text)
+            if result.returncode != 0:
+                failures.append(f"{name}: engine exited with code {result.returncode}")
+            failures.extend(collect_errors(text))
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.output or ""
+            if isinstance(partial, bytes):
+                partial = partial.decode("utf-8", errors="replace")
+            output.append(partial)
+            failures.append(f"{name}: timed out after {args.timeout}s")
+            timed_out = True
+            break
+
+    log_path.write_text("".join(output), encoding="utf-8")
+    failures = list(dict.fromkeys(failures))
+    version = engine_version(engine) or "unknown"
+
+    if failures:
+        print(f"check: failed ({version})")
+        for line in failures[:12]:
+            print(f"  {line}")
+        if len(failures) > 12:
+            print(f"  ... and {len(failures) - 12} more")
+        print(f"full log: {log_path.relative_to(ROOT)}")
+        return 1
+
+    main_scene = read_main_scene()
+    print(f"check: ok ({version})")
+    print(f"main scene: {main_scene}")
+    print(f"log: {log_path.relative_to(ROOT)}")
+    return 0
+
+
+def read_main_scene() -> str:
+    project = GAME_DIR / "project.godot"
+    try:
+        text = project.read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    match = re.search(r'^run/main_scene="([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else "not set"
+
+
+def cmd_run(args) -> int:
+    engine = require_engine()
+    require_game()
+    argv = [engine, "--path", GAME_DIR, *args.extra]
+    print(f"running {engine_version(engine) or engine}")
+    try:
+        return run(argv).returncode
+    except KeyboardInterrupt:
+        return 130
+
+
+def cmd_editor(args) -> int:
+    engine = require_engine()
+    require_game()
+    if platform.system() == "Linux" and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        print("gai: no display found. The editor needs a desktop session.", file=sys.stderr)
+        return 1
+    try:
+        return run([engine, "--path", GAME_DIR, "--editor"]).returncode
+    except KeyboardInterrupt:
+        return 130
+
+
+def path_allowed(path: str, state: dict) -> bool:
+    if path in state.get("edited", []):
+        return True
+    if path in state.get("owned_files", []):
+        return True
+    return any(path.startswith(prefix) for prefix in state.get("owned_prefixes", []))
+
+
+def layer_violations(base: str, staged: bool = False):
+    args = ["diff", "--name-status", "--no-renames", base]
+    if staged:
+        args.insert(1, "--cached")
+    result = git(*args)
+    state = load_upstream()
+    violations = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status, path = parts[0], parts[-1]
+        if not path_allowed(path, state):
+            violations.append((status, path))
+        elif status == "D" and path in state.get("edited", []):
+            violations.append((status, path))
+    return violations
+
+
+def check_base(state: dict) -> None:
+    commit = state["commit"]
+    if git("cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode != 0:
+        die(
+            f"upstream base {commit[:8]} is not in this clone. "
+            "A shallow clone cannot verify the layer. Run `git fetch --unshallow`."
+        )
+    if git("merge-base", "--is-ancestor", commit, "HEAD", check=False).returncode != 0:
+        die(f"upstream base {commit[:8]} is not an ancestor of HEAD")
+
+
+def print_violations(violations) -> None:
+    print("layer: outside the gai layer")
+    for status, path in violations:
+        print(f"  {status} {path}")
+    print("Move gai files under an owned path, or add the path to `.gai/upstream.json` with a reason.")
+
+
+def cmd_upstream_status(args) -> int:
+    state = load_upstream()
+    merge = git("rev-parse", "--verify", "-q", "MERGE_HEAD", check=False)
+    count = git("rev-list", "--count", f"{state['commit']}..HEAD", check=False)
+    ahead = count.stdout.strip() if count.returncode == 0 else "unknown"
+    print(f"gai {gai_version()}")
+    print(f"base {state['tag']} {state['commit'][:8]} ({state.get('merged_at', 'unknown')})")
+    print(f"commits since base: {ahead}")
+    if merge.returncode == 0:
+        print("merge in progress: yes")
+    else:
+        print("merge in progress: no")
+    return 0
+
+
+def cmd_upstream_check(args) -> int:
+    state = load_upstream()
+    check_base(state)
+    violations = layer_violations(state["commit"])
+    if violations:
+        print_violations(violations)
+        return 1
+    changed = git("diff", "--name-only", state["commit"], "HEAD").stdout.splitlines()
+    print(f"base {state['tag']} {state['commit'][:8]}")
+    print(f"layer: ok ({len(changed)} files since base)")
+    return 0
+
+
+def ensure_upstream_remote() -> None:
+    existing = git("remote", "get-url", "upstream", check=False)
+    if existing.returncode == 0:
+        return
+    git("remote", "add", "upstream", DEFAULT_UPSTREAM)
+    print(f"added remote upstream {DEFAULT_UPSTREAM}")
+
+
+def merge_in_progress() -> bool:
+    return git("rev-parse", "--verify", "-q", "MERGE_HEAD", check=False).returncode == 0
+
+
+def unmerged_files():
+    result = git("diff", "--name-only", "--diff-filter=U")
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def print_conflict_help(paths) -> None:
+    print("merge conflicts:")
+    for path in paths:
+        print(f"  {path}")
+    print("policy:")
+    print("  README.md   keep ours: git checkout --ours README.md, then git add README.md")
+    print("  version.py  keep our brand lines and take upstream's version numbers")
+    print("  .gitignore  keep both sections")
+    print("Resolve, then run: bin/gai upstream continue")
+
+
+def tag_for_commit(commit: str) -> str:
+    tags = [tag for tag in git("tag", "--points-at", commit).stdout.splitlines() if tag]
+    stable = [tag for tag in tags if tag.endswith("-stable")]
+    if stable:
+        return sorted(stable)[-1]
+    return sorted(tags)[-1] if tags else f"upstream@{commit[:8]}"
+
+
+def finalize_merge(commit: str) -> int:
+    state = load_upstream()
+    violations = layer_violations(commit, staged=True)
+    if violations:
+        print_violations(violations)
+        return 1
+
+    state["commit"] = commit
+    state["tag"] = tag_for_commit(commit)
+    state["merged_at"] = date.today().isoformat()
+    save_upstream(state)
+    git("add", ".gai/upstream.json")
+    git("commit", "-m", f"Merge upstream {state['tag']}")
+    print(f"merged {state['tag']} ({commit[:8]})")
+    print(f"base {state['tag']} {commit[:8]}")
+    return 0
+
+
+def cmd_upstream_merge(args) -> int:
+    if merge_in_progress():
+        die("a merge is in progress. Resolve it, then run `bin/gai upstream continue`.")
+    state = load_upstream()
+    check_base(state)
+    ensure_upstream_remote()
+    print("fetching upstream tags")
+    git("fetch", "--tags", "upstream")
+    resolved = git("rev-parse", "--verify", "-q", f"{args.ref}^{{commit}}", check=False)
+    if resolved.returncode != 0:
+        die(f"cannot resolve `{args.ref}` after fetch")
+
+    commit = resolved.stdout.strip()
+    if git("merge-base", "--is-ancestor", commit, "HEAD", check=False).returncode == 0:
+        if commit == state["commit"]:
+            print(f"already at {state['tag']} ({commit[:8]})")
+            return 0
+        die(f"`{args.ref}` is already in history but is not the recorded base. Nothing to merge.")
+
+    result = git("merge", "--no-commit", "--no-ff", commit, check=False)
+    if result.returncode != 0:
+        conflicts = unmerged_files()
+        if conflicts:
+            print_conflict_help(conflicts)
+            return 1
+        detail = (result.stderr or result.stdout).strip()
+        die(f"merge failed: {detail}")
+
+    if not merge_in_progress():
+        die("merge produced no changes")
+    return finalize_merge(commit)
+
+
+def cmd_upstream_continue(args) -> int:
+    if not merge_in_progress():
+        die("no merge in progress")
+    conflicts = unmerged_files()
+    if conflicts:
+        print_conflict_help(conflicts)
+        return 1
+    merge_head = git("rev-parse", "MERGE_HEAD").stdout.strip()
+    return finalize_merge(merge_head)
+
+
+def cmd_upstream_abort(args) -> int:
+    if not merge_in_progress():
+        die("no merge in progress")
+    git("merge", "--abort")
+    print("merge aborted")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    problems = []
+    print(f"gai {gai_version()}")
+    print(f"repo {ROOT}")
+    print(f"python {platform.python_version()}")
+
+    state = load_upstream()
+    print(f"upstream {state['tag']} {state['commit'][:8]}")
+    if git("cat-file", "-e", f"{state['commit']}^{{commit}}", check=False).returncode != 0:
+        problems.append("upstream base is not in this clone (shallow clone?)")
+    elif git("merge-base", "--is-ancestor", state["commit"], "HEAD", check=False).returncode != 0:
+        problems.append("upstream base is not an ancestor of HEAD")
+    else:
+        violations = layer_violations(state["commit"])
+        if violations:
+            problems.append(f"{len(violations)} paths outside the gai layer")
+
+    project = GAME_DIR / "project.godot"
+    if project.is_file():
+        print(f"game {GAME_DIR}")
+        print(f"main scene {read_main_scene()}")
+    else:
+        problems.append("`game/project.godot` is missing")
+
+    engine = find_engine()
+    if engine is None:
+        problems.append("no engine found; run `bin/gai engine install`")
+    else:
+        version = engine_version(engine) or "unknown"
+        print(f"engine {version}")
+        print(f"engine path {engine}")
+        expected = re.match(r"(\d+\.\d+\.\d+)", state["tag"])
+        if expected and not version.startswith(expected.group(1) + "."):
+            problems.append(f"engine {version} does not match upstream {state['tag']}")
+
+    if problems:
+        print(f"status: {len(problems)} problems")
+        for problem in problems:
+            print(f"  {problem}")
+        return 1
+    print("status: ok")
+    return 0
+
+
+def cmd_version(args) -> int:
+    state = load_upstream()
+    print(f"gai {gai_version()}")
+    print(f"upstream {state['tag']} {state['commit'][:8]}")
+    engine = find_engine()
+    if engine is None:
+        print("engine not installed")
+    else:
+        print(f"engine {engine_version(engine) or 'unknown'}")
+        print(f"engine path {engine}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="gai",
+        description="Run the game, check it, and keep the engine close to upstream.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    version = sub.add_parser("version", help="show the gai, upstream, and engine versions")
+    version.set_defaults(func=cmd_version)
+
+    doctor = sub.add_parser("doctor", help="check the engine, the game, and the upstream base")
+    doctor.set_defaults(func=cmd_doctor)
+
+    check = sub.add_parser("check", help="import assets, parse every script, and run the main scene")
+    check.add_argument("--frames", type=int, default=5, help="frames to run (default: 5)")
+    check.add_argument("--timeout", type=int, default=120, help="seconds per step (default: 120)")
+    check.set_defaults(func=cmd_check)
+
+    run_cmd = sub.add_parser("run", help="run the game")
+    run_cmd.add_argument("extra", nargs=argparse.REMAINDER, help="arguments for the engine")
+    run_cmd.set_defaults(func=cmd_run)
+
+    editor = sub.add_parser("editor", help="open the game in the Godot editor")
+    editor.set_defaults(func=cmd_editor)
+
+    engine = sub.add_parser("engine", help="manage the engine binary")
+    engine_sub = engine.add_subparsers(dest="engine_command", required=True)
+    install = engine_sub.add_parser("install", help="download the official engine for this platform")
+    install.add_argument("--force", action="store_true", help="replace an installed engine")
+    install.set_defaults(func=cmd_engine_install)
+    engine_path = engine_sub.add_parser("path", help="print the engine path")
+    engine_path.set_defaults(func=cmd_engine_path)
+
+    upstream = sub.add_parser("upstream", help="track godotengine/godot")
+    upstream_sub = upstream.add_subparsers(dest="upstream_command", required=True)
+    status = upstream_sub.add_parser("status", help="show the recorded base and merge state")
+    status.set_defaults(func=cmd_upstream_status)
+    layer = upstream_sub.add_parser("check", help="fail if a change leaves the gai layer")
+    layer.set_defaults(func=cmd_upstream_check)
+    merge = upstream_sub.add_parser("merge", help="fetch and merge an upstream tag")
+    merge.add_argument("ref", help="tag or commit to merge")
+    merge.set_defaults(func=cmd_upstream_merge)
+    cont = upstream_sub.add_parser("continue", help="finish a merge after resolving conflicts")
+    cont.set_defaults(func=cmd_upstream_continue)
+    abort = upstream_sub.add_parser("abort", help="abort the current merge")
+    abort.set_defaults(func=cmd_upstream_abort)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
