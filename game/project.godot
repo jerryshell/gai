@@ -1,0 +1,26 @@
+; gai game project.
+; Edit this file in the editor when possible.
+;
+; Format:
+;   [section]
+;   param=value
+
+config_version=5
+
+[application]
+
+config/name="my-game"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1152
+window/size/viewport_height=648
+window/stretch/mode="canvas_items"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
