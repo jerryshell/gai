@@ -13,6 +13,12 @@ Upstream tracking is a maintenance process, not a limit on features.
 | gai workspace | `bin/gai`, `AGENTS.md`, `docs/gai`, `.agents`, `game` | This repository |
 | Your game | `game/` | You and your agent |
 
+## First run
+
+The user clones the repo, opens pi or opencode, and describes a game. The agent
+runs `bin/gai bootstrap`, which installs the official engine if needed and
+checks the game. The user does not run setup commands.
+
 ## Features own divergence
 
 Every engine change belongs to a feature in `.gai/features/`:

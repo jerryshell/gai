@@ -59,17 +59,20 @@ class CheckTest(unittest.TestCase):
             json.dumps(state, indent=2) + "\n", encoding="utf-8"
         )
 
-    def run_check(self):
+    def run_gai(self, *args):
         env = dict(os.environ)
         env["GAI_GODOT"] = ENGINE
         return subprocess.run(
-            [sys.executable, str(self.tmp / "bin" / "gai"), "check"],
+            [sys.executable, str(self.tmp / "bin" / "gai"), *args],
             cwd=str(self.tmp),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
         )
+
+    def run_check(self):
+        return self.run_gai("check")
 
     @unittest.skipUnless(ENGINE, "no engine binary")
     def test_clean_game_passes(self):
@@ -85,6 +88,12 @@ class CheckTest(unittest.TestCase):
         result = self.run_check()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("Parse Error", result.stdout)
+
+    @unittest.skipUnless(ENGINE, "no engine binary")
+    def test_bootstrap_with_engine(self):
+        result = self.run_gai("bootstrap")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("check: ok", result.stdout)
 
     @unittest.skipUnless(ENGINE, "no engine binary")
     def test_engine_mismatch_fails(self):

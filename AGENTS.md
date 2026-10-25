@@ -5,6 +5,22 @@ the repository root. Your game is in `game/`.
 
 Read `docs/gai/architecture.md` before you change anything outside `game/`.
 
+## First run
+
+When the user describes a game, do this before you plan:
+
+1. Run `bin/gai bootstrap`. It installs the official engine if it is missing,
+   then checks the game. Tell the user before the about 140 MB download. On
+   Windows, run `python bin/gai bootstrap`.
+2. Read `game/project.godot` and `game/scenes/main.tscn`.
+3. Start with the smallest playable slice. If the idea is vague, ask one short
+   question about the core loop, then start.
+4. Run `bin/gai check` after every change.
+5. Open the editor only when the user asks. Use headless runs for your own tests.
+
+Do not ask the user to install the engine, run `check`, or open the editor for
+you. Do not present a long plan before the first playable change.
+
 ## Work in the game
 
 - Put game code, scenes, and assets in `game/`.
@@ -18,6 +34,7 @@ Run these from the repository root.
 
 | Command | What it does |
 | --- | --- |
+| `bin/gai bootstrap` | Installs the engine if needed, then checks the game. Use this on the first run. |
 | `bin/gai doctor` | Checks the engine, the game, features, and the upstream base. |
 | `bin/gai check` | Imports assets, parses every `.gd` file, runs the main scene headless, and fails on errors. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |

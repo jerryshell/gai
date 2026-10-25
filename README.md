@@ -14,19 +14,24 @@ git clone git@github.com:jerryshell/gai.git my-game
 # Without an SSH key:
 # git clone https://github.com/jerryshell/gai.git my-game
 cd my-game
-bin/gai engine install
-bin/gai check
-bin/gai editor
+pi
+# or: opencode
 ```
 
-Then open `my-game` in pi or opencode and describe the game you want. The agent
-reads `AGENTS.md` and works in `game/`.
+Describe the game you want. For example:
 
-`bin/gai engine install` downloads the official Godot 4.7.2 binary (about 140 MB)
-and checks its SHA-512. The clone carries the full Godot history, about 1.2 GB in
-`.git`. That history is what makes upstream merges possible.
+> Build a 2D platformer about a cat that collects stars. Start with movement and one level.
 
-On Windows, run `python bin/gai` in place of `bin/gai`.
+The agent reads `AGENTS.md`, installs the engine on the first run, and works in
+`game/`. It runs `bin/gai bootstrap` for you. You do not need to run setup
+commands.
+
+The first run downloads the official Godot 4.7.2 binary (about 140 MB) and checks
+its SHA-512. The clone carries the full Godot history, about 1.2 GB in `.git`.
+That history is what makes upstream merges possible.
+
+For manual use, run `bin/gai bootstrap`. Then run `bin/gai run` or
+`bin/gai editor`. On Windows, run `python bin/gai` in place of `bin/gai`.
 
 ## What an agent gets
 

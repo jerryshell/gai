@@ -338,6 +338,43 @@ def cmd_engine_path(args) -> int:
     return 0
 
 
+def cmd_bootstrap(args) -> int:
+    state = load_upstream()
+    engine = find_engine()
+    if engine is None:
+        print("gai: engine not found; installing the official Godot 4.7.2 binary", flush=True)
+        result = cmd_engine_install(argparse.Namespace(force=False))
+        if result != 0:
+            return result
+        engine = find_engine()
+        if engine is None:
+            die("the install finished but no engine binary was found")
+    else:
+        print(f"gai: engine {engine_version(engine) or 'unknown'}", flush=True)
+
+    problems = version_problems(engine, state)
+    downloaded = BIN_DIR in engine.parents
+    if problems and downloaded and any(problem.startswith("engine ") for problem in problems):
+        print("gai: downloaded engine does not match; reinstalling", flush=True)
+        result = cmd_engine_install(argparse.Namespace(force=True))
+        if result != 0:
+            return result
+        engine = find_engine()
+        if engine is None:
+            die("the install finished but no engine binary was found")
+        problems = version_problems(engine, state)
+
+    if problems:
+        print("gai: engine or version.py does not match the recorded upstream base")
+        for problem in problems:
+            print(f"  {problem}")
+        print("Run `bin/gai doctor` to see the engine path. For a downloaded engine, run `bin/gai engine install --force`. For a source build, rebuild it.")
+        return 1
+
+    require_game()
+    return cmd_check(argparse.Namespace(frames=5, timeout=120))
+
+
 def collect_errors(text: str):
     found = []
     for line in text.splitlines():
@@ -898,6 +935,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="check the engine, the game, and the upstream base")
     doctor.set_defaults(func=cmd_doctor)
+
+    bootstrap = sub.add_parser("bootstrap", help="install the engine if needed, then check the game")
+    bootstrap.set_defaults(func=cmd_bootstrap)
 
     check = sub.add_parser("check", help="import assets, parse every script, and run the main scene")
     check.add_argument("--frames", type=int, default=5, help="frames to run (default: 5)")
