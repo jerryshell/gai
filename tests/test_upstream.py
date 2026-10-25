@@ -12,6 +12,11 @@ from pathlib import Path
 
 GAI = Path(__file__).resolve().parent.parent / "bin" / "gai"
 
+VERSION_BUMP = (
+    'short_name = "godot"\nname = "Godot Engine"\nmajor = 4\nminor = 8\npatch = 0\n'
+    'status = "stable"\nmodule_config = ""\nwebsite = "https://godotengine.org"\ndocs = "4.8"\n'
+)
+
 
 class Repo:
     def __init__(self, root: Path, env):
@@ -69,7 +74,11 @@ class UpstreamTest(unittest.TestCase):
         (self.repo.root / "bin" / "gai").chmod(0o755)
 
         self.repo.write("README.md", "# Godot Engine\n")
-        self.repo.write("version.py", 'short_name = "godot"\nname = "Godot Engine"\n')
+        self.repo.write(
+            "version.py",
+            'short_name = "godot"\nname = "Godot Engine"\nmajor = 4\nminor = 7\npatch = 2\nstatus = "stable"\n'
+            'module_config = ""\nwebsite = "https://godotengine.org"\ndocs = "4.7"\n',
+        )
         self.repo.write(".gitignore", "bin\n")
         self.repo.write("core/os/os.cpp", "// upstream\n")
         self.repo.write(".gai/version", "0.0.0-test\n")
@@ -92,21 +101,26 @@ class UpstreamTest(unittest.TestCase):
         self.repo.git("commit", "-q", "-m", "record upstream base")
 
         self.repo.write("README.md", "# test game\n")
-        self.repo.write("version.py", 'short_name = "godot"\nname = "gai"\n')
+        self.repo.write(
+            "version.py",
+            'short_name = "godot"\nname = "gai"\nmajor = 4\nminor = 7\npatch = 2\nstatus = "stable"\n'
+            'module_config = ""\nwebsite = "https://github.com/jerryshell/gai"\ndocs = "4.7"\n',
+        )
         self.repo.write(".gitignore", "bin\n!/bin/\n/bin/*\n!/bin/gai\n")
         self.repo.write("game/project.godot", "config_version=5\n")
         self.repo.write("game/scripts/main.gd", "extends Node2D\n")
         self.repo.git("add", "-A")
         self.repo.git("commit", "-q", "-m", "gai layer")
 
-    def make_upstream(self, relative: str, content: str):
+    def make_upstream(self, files: dict):
         bare = self.tmp / "upstream.git"
         work = self.tmp / "upstream-work"
         self.repo.git("clone", "-q", "--bare", str(self.repo.root), str(bare), cwd=self.tmp)
         self.repo.git("clone", "-q", str(bare), str(work), cwd=self.tmp)
         upstream = Repo(work, self.repo.env)
         upstream.git("checkout", "-q", "-b", "upstream-line", self.base)
-        upstream.write(relative, content)
+        for relative, content in files.items():
+            upstream.write(relative, content)
         upstream.git("add", "-A")
         upstream.git("commit", "-q", "-m", "upstream change")
         upstream.git("tag", "4.8.0-stable")
@@ -122,7 +136,7 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn("layer: ok", result.stdout)
 
     def test_clean_merge_moves_the_base(self):
-        self.make_upstream("core/os/os.cpp", "// upstream change\n")
+        self.make_upstream({"core/os/os.cpp": "// upstream change\n"})
         result = self.repo.gai("upstream", "merge", "4.8.0-stable")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -134,7 +148,7 @@ class UpstreamTest(unittest.TestCase):
         self.assert_layer_ok()
 
     def test_readme_conflict_then_continue(self):
-        self.make_upstream("README.md", "# upstream readme\n")
+        self.make_upstream({"README.md": "# upstream readme\n"})
         result = self.repo.gai("upstream", "merge", "4.8.0-stable")
         self.assertEqual(result.returncode, 1)
         self.assertIn("README.md", result.stdout)
@@ -150,7 +164,7 @@ class UpstreamTest(unittest.TestCase):
         self.assert_layer_ok()
 
     def test_abort_restores_the_repo(self):
-        self.make_upstream("README.md", "# upstream readme\n")
+        self.make_upstream({"README.md": "# upstream readme\n"})
         result = self.repo.gai("upstream", "merge", "4.8.0-stable")
         self.assertEqual(result.returncode, 1)
 
@@ -158,6 +172,36 @@ class UpstreamTest(unittest.TestCase):
         self.assertEqual(abort.returncode, 0, abort.stdout + abort.stderr)
         self.assertTrue(self.repo.git("rev-parse", "--verify", "-q", "MERGE_HEAD", check=False).returncode != 0)
         self.assertEqual((self.repo.root / "README.md").read_text(), "# test game\n")
+
+    def test_version_bump_is_resolved_automatically(self):
+        self.make_upstream({"version.py": VERSION_BUMP})
+        result = self.repo.gai("upstream", "merge", "4.8.0-stable")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("resolved version.py", result.stdout)
+
+        text = (self.repo.root / "version.py").read_text()
+        self.assertIn('name = "gai"', text)
+        self.assertIn('website = "https://github.com/jerryshell/gai"', text)
+        self.assertIn("minor = 8", text)
+        self.assertIn('docs = "4.8"', text)
+        self.assert_layer_ok()
+
+    def test_version_bump_and_readme_conflict(self):
+        self.make_upstream({"version.py": VERSION_BUMP, "README.md": "# upstream readme\n"})
+        result = self.repo.gai("upstream", "merge", "4.8.0-stable")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("resolved version.py", result.stdout)
+        self.assertIn("README.md", result.stdout)
+
+        self.repo.git("checkout", "--ours", "README.md")
+        self.repo.git("add", "README.md")
+        cont = self.repo.gai("upstream", "continue")
+        self.assertEqual(cont.returncode, 0, cont.stdout + cont.stderr)
+
+        text = (self.repo.root / "version.py").read_text()
+        self.assertIn('name = "gai"', text)
+        self.assertIn("minor = 8", text)
+        self.assert_layer_ok()
 
     def test_edit_outside_the_layer_fails(self):
         self.repo.write("core/os/os.cpp", "// local change\n")

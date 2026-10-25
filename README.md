@@ -56,10 +56,11 @@ bin/gai engine install --force
 bin/gai check
 ```
 
-Conflicts can appear only in the files the layer edits: `README.md`,
-`version.py`, and `.gitignore`. The tool prints the policy for each.
-`bin/gai upstream check` fails when a commit changes any other upstream file, so
-the layer cannot grow by accident.
+Conflicts can appear only in the files the layer edits. The tool resolves
+`version.py` by keeping our name and website. It prints the policy for the
+remaining files, `README.md` and `.gitignore`. `bin/gai upstream check` fails
+when a commit changes any other upstream file, so the layer cannot grow by
+accident.
 
 Read `docs/gai/upstream.md` before you sync.
 

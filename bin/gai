@@ -212,16 +212,21 @@ def extract_member(archive: Path, member: str, target: Path) -> None:
 
 
 def extract_tree(archive: Path, source: str, target: Path) -> None:
-    with zipfile.ZipFile(archive) as bundle:
-        for info in bundle.infolist():
-            name = Path(info.filename)
-            if name.is_absolute() or ".." in name.parts:
-                die(f"refusing unsafe zip member: {info.filename}")
-        bundle.extractall(target.parent / (target.name + ".tmp"))
-    app = target.parent / (target.name + ".tmp") / source
-    if not app.exists():
-        die(f"`{source}` is not in {archive.name}")
-    shutil.move(str(app), str(target))
+    staging = target.parent / (target.name + ".tmp")
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            for info in bundle.infolist():
+                name = Path(info.filename)
+                if name.is_absolute() or ".." in name.parts:
+                    die(f"refusing unsafe zip member: {info.filename}")
+            bundle.extractall(staging)
+        app = staging / source
+        if not app.exists():
+            die(f"`{source}` is not in {archive.name}")
+        shutil.move(str(app), str(target))
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     binary = target / "Contents" / "MacOS" / "Godot"
     if binary.exists():
         binary.chmod(0o755)
@@ -258,6 +263,8 @@ def cmd_engine_install(args) -> int:
         else:
             staging = work / "staged"
             extract_member(archive, member, staging)
+            if target.exists():
+                target.unlink()
             shutil.move(str(staging), str(target))
             binary = target
     finally:
@@ -489,13 +496,49 @@ def unmerged_files():
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
+BRAND_KEYS = ("name", "website")
+
+
+def read_brand(text: str):
+    values = {}
+    for key in BRAND_KEYS:
+        match = re.search(rf'^{key} = "([^"]*)"$', text, re.MULTILINE)
+        if not match:
+            return None
+        values[key] = match.group(1)
+    return values
+
+
+def resolve_version_conflict() -> bool:
+    if "version.py" not in unmerged_files():
+        return False
+    ours = git("show", "HEAD:version.py", check=False)
+    theirs = git("show", "MERGE_HEAD:version.py", check=False)
+    if ours.returncode != 0 or theirs.returncode != 0:
+        return False
+    brand = read_brand(ours.stdout)
+    if brand is None:
+        return False
+
+    text = theirs.stdout
+    for key, value in brand.items():
+        if not re.search(rf'^{key} = ".*"$', text, re.MULTILINE):
+            return False
+        text = re.sub(rf'^{key} = ".*"$', f'{key} = "{value}"', text, count=1, flags=re.MULTILINE)
+
+    (ROOT / "version.py").write_text(text, encoding="utf-8")
+    git("add", "version.py")
+    print("resolved version.py: kept name and website, took upstream's version numbers", flush=True)
+    return True
+
+
 def print_conflict_help(paths) -> None:
     print("merge conflicts:")
     for path in paths:
         print(f"  {path}")
     print("policy:")
     print("  README.md   keep ours: git checkout --ours README.md, then git add README.md")
-    print("  version.py  keep our brand lines and take upstream's version numbers")
+    print("  version.py  the tool resolves it; keep it only if the automatic step failed")
     print("  .gitignore  keep both sections")
     print("Resolve, then run: bin/gai upstream continue")
 
@@ -548,6 +591,10 @@ def cmd_upstream_merge(args) -> int:
     result = git("merge", "--no-commit", "--no-ff", commit, check=False)
     if result.returncode != 0:
         conflicts = unmerged_files()
+        if "version.py" in conflicts and resolve_version_conflict():
+            conflicts = unmerged_files()
+            if not conflicts:
+                return finalize_merge(commit)
         if conflicts:
             print_conflict_help(conflicts)
             return 1
@@ -562,6 +609,7 @@ def cmd_upstream_merge(args) -> int:
 def cmd_upstream_continue(args) -> int:
     if not merge_in_progress():
         die("no merge in progress")
+    resolve_version_conflict()
     conflicts = unmerged_files()
     if conflicts:
         print_conflict_help(conflicts)
@@ -573,6 +621,7 @@ def cmd_upstream_continue(args) -> int:
 def cmd_upstream_abort(args) -> int:
     if not merge_in_progress():
         die("no merge in progress")
+    git("checkout", "HEAD", "--", ".gai/upstream.json", check=False)
     git("merge", "--abort")
     print("merge aborted")
     return 0

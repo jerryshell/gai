@@ -18,12 +18,16 @@ The command adds the `upstream` remote when it is missing, fetches tags, runs
 `git merge --no-commit --no-ff`, checks the result against the new base, records
 the base in `.gai/upstream.json`, and commits.
 
-If it stops with conflicts, resolve only the listed files.
+If `version.py` conflicts, the command resolves it. It takes upstream's file
+and re-applies our `name` and `website`. The new version numbers and `docs`
+value stay.
+
+If it stops with other conflicts, resolve only the listed files.
 
 | File | Policy |
 | --- | --- |
 | `README.md` | Keep ours. Then add any upstream fact the front door needs. |
-| `version.py` | Keep `name = "gai"` and our `website`. Take upstream's `major`, `minor`, `patch`, and `status`. |
+| `version.py` | The tool resolves it. Keep it only if the automatic step failed. |
 | `.gitignore` | Keep both sets of rules. |
 
 Then:
@@ -32,6 +36,9 @@ Then:
 git add <files>
 bin/gai upstream continue
 ```
+
+If the automatic `version.py` step fails, take upstream's file and set
+`name = "gai"` and our website by hand.
 
 To back out:
 
