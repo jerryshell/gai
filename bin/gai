@@ -242,9 +242,9 @@ def cmd_engine_install(args) -> int:
     work = Path(tempfile.mkdtemp(prefix=".install-", dir=str(GAI_DIR)))
     try:
         archive = work / asset
-        print(f"downloading {asset}")
+        print(f"downloading {asset}", flush=True)
         download(RELEASE_BASE.format(tag=tag, name=asset), archive)
-        print("verifying sha512")
+        print("verifying sha512", flush=True)
         actual = sha512_of(archive)
         expected = expected_checksum(asset, tag)
         if actual != expected:
@@ -374,8 +374,11 @@ def read_main_scene() -> str:
 def cmd_run(args) -> int:
     engine = require_engine()
     require_game()
-    argv = [engine, "--path", GAME_DIR, *args.extra]
-    print(f"running {engine_version(engine) or engine}")
+    extra = list(args.extra)
+    if extra[:1] == ["--"]:
+        extra = extra[1:]
+    argv = [engine, "--path", GAME_DIR, *extra]
+    print(f"running {engine_version(engine) or engine}", flush=True)
     try:
         return run(argv).returncode
     except KeyboardInterrupt:
