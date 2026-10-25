@@ -26,10 +26,13 @@ you. Do not present a long plan before the first playable change.
 
 ## Work in the game
 
-- Put game code, scenes, and assets in `game/`.
-- A game task does not edit the engine, `README.md`, `version.py`, or `.gitignore`.
+- Put game code, scenes, and assets in `game/`. The engine source is part of your
+  workspace: read it and change it when the game needs it.
+- A game task does not edit the fork's front-door files (`README.md`,
+  `version.py`, `.gitignore`) by default.
 - Do not commit `game/.godot/`, `.gai/bin/`, or `.gai/logs/`.
-- When a task needs an engine change, read `docs/gai/upstream.md` first.
+- After an engine change, rebuild with `bin/gai bootstrap` and run `bin/gai check`.
+  Read `docs/gai/upstream.md` for the merge risk.
 
 ## Commands
 
@@ -44,7 +47,7 @@ Run these from the repository root.
 | `bin/gai editor` | Opens the editor. A human uses this command. |
 | `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. |
 | `bin/gai engine install` | Downloads the official fallback engine into `.gai/bin/`. It has no gai features. |
-| `bin/gai upstream check` | Fails when an engine change has no active feature owner. |
+| `bin/gai upstream check` | Warns when an engine change has no feature owner; `--strict` fails. |
 | `bin/gai upstream report` | Lists features, changed paths, and unclaimed paths. |
 
 ## Live scene
@@ -57,11 +60,21 @@ bin/gai agent start
 bin/gai agent tree
 bin/gai agent get /root/Main --property visible
 bin/gai agent set /root/Main visible false
+bin/gai agent methods
+bin/gai agent call classdb.classes '{}'
+bin/gai agent call classdb.class '{"name":"Node2D"}'
+bin/gai agent call object.singleton '{"name":"PhysicsServer3D"}'
+bin/gai agent call object.call '{"handle":"<handle>","method":"get_class","args":[]}'
 bin/gai agent stop
 ```
 
-It reads and edits the running game. Run control, input, screenshots, and editor
-mode are not implemented.
+The bridge exposes the engine's reflection. Every class, property, method,
+signal, and singleton is reachable through `classdb.*`, `object.*`, and
+`api.singletons`. A handle is the decimal string returned by `scene.tree`,
+`object.singleton`, `classdb.instantiate`, or `resource.load`. Use
+`agent call` for any method; the named commands are sugar. `agent start
+--editor` starts the editor, where `EditorInterface` is a singleton. Add
+`--display` for screenshots.
 
 ## The loop
 
@@ -99,16 +112,20 @@ exit code by itself. `bin/gai check` scans the output and fails for you.
 
 ## Engine work
 
-The engine is part of the product. A game task stays in `game/` by default. An
-engine task does all of this:
+The engine is fully editable. A game task starts in `game/`, but it may change
+any engine file when the requirement needs it. After an engine change, rebuild
+with `bin/gai bootstrap` and run `bin/gai check`.
+
+For a change that gai itself should maintain:
 
 1. Read `docs/gai/architecture.md` and `docs/gai/upstream.md`.
-2. Add or activate a feature in `.gai/features/`. Claim every engine path.
+2. Add or activate a feature in `.gai/features/`.
 3. Add the feature doc and tests.
-4. Build the engine (`docs/gai/build.md`). `bin/gai check` tests the game, not the engine.
-5. Run `bin/gai upstream check` before you commit.
+4. Build the engine and run the feature tests.
+5. Run `bin/gai upstream check --strict` before you commit.
 
-A deep engine change that no feature owns is a bug in the change, not in the
-tool. An engine feature is not done until the engine builds and its tests pass.
+A game-specific engine change can stay unclaimed. `bin/gai upstream report`
+shows it and the merge risk. Ownership is for upstream maintenance, not
+permission. The build and tests are the gate.
 
 Godot 4.7 documentation: https://docs.godotengine.org/en/4.7/

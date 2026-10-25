@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -142,6 +143,98 @@ class AgentTest(unittest.TestCase):
         wrong_type = self.run_gai("agent", "set", "/root/Main", "visible", "notabool")
         self.assertEqual(wrong_type.returncode, 1)
         self.assertIn("invalid value", wrong_type.stderr)
+
+        stop = self.run_gai("agent", "stop")
+        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_editor_mode(self):
+        start = self.run_gai("agent", "start", "--editor", timeout=60)
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        self.assertIn("agent ready", start.stdout)
+
+        def call(method, params=None):
+            result = self.run_gai("agent", "call", method, json.dumps(params or {}))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
+        singletons = call("api.singletons")
+        self.assertIn("EditorInterface", [item["name"] for item in singletons["singletons"]])
+        interface = call("object.singleton", {"name": "EditorInterface"})
+        self.assertEqual(interface["class"], "EditorInterface")
+
+        stop = self.run_gai("agent", "stop")
+        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_capability_surface(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+
+        def call(method, params=None):
+            result = self.run_gai("agent", "call", method, json.dumps(params or {}))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
+        methods = call("api.methods")
+        self.assertIn("classdb.classes", methods["methods"])
+        self.assertIn("object.call", methods["methods"])
+
+        singletons = call("api.singletons")
+        self.assertIn("Engine", [item["name"] for item in singletons["singletons"]])
+
+        classes = call("classdb.classes")["classes"]
+        self.assertIn("Node2D", classes)
+        self.assertIn("PhysicsServer3D", classes)
+
+        node2d = call("classdb.class", {"name": "Node2D"})
+        self.assertIn("position", [item["name"] for item in node2d["properties"]])
+
+        tree = json.loads(self.run_gai("agent", "tree").stdout)
+        handle = tree["root"]["handle"]
+        self.assertTrue(call("object.get", {"handle": handle, "property": "visible"}))
+        self.assertFalse(call("object.set", {"handle": handle, "property": "visible", "value": False}))
+        self.assertFalse(call("object.get", {"handle": handle, "property": "visible"}))
+        self.assertEqual(call("object.call", {"handle": handle, "method": "get_class", "args": []}), "Node2D")
+
+        engine = call("object.singleton", {"name": "Engine"})
+        version = call("object.call", {"handle": engine["handle"], "method": "get_version_info", "args": []})
+        self.assertEqual(version["major"], 4)
+
+        created = call("node.create", {"parent": "/root/Main", "type": "Node2D", "name": "Probe"})
+        self.assertEqual(created["class"], "Node2D")
+        tree = json.loads(self.run_gai("agent", "tree").stdout)
+        self.assertTrue(any(child["name"] == "Probe" for child in tree["root"]["children"]))
+        call("node.delete", {"path": "/root/Main/Probe"})
+
+        gradient = call("classdb.instantiate", {"name": "Gradient"})
+        self.assertEqual(gradient["class"], "Gradient")
+        saved = call("resource.save", {"handle": gradient["handle"], "path": "user://probe.tres"})
+        self.assertIn("saved", saved)
+        loaded = call("resource.load", {"path": "user://probe.tres"})
+        self.assertEqual(loaded["class"], "Gradient")
+        call("object.free", {"handle": gradient["handle"]})
+        call("object.free", {"handle": loaded["handle"]})
+
+        self.assertEqual(call("project.get", {"key": "application/config/name"}), "my-game")
+        self.assertFalse(call("run.status")["paused"])
+        call("run.pause")
+        self.assertTrue(call("run.status")["paused"])
+        call("run.step", {"frames": 1})
+        time.sleep(0.3)
+        self.assertTrue(call("run.status")["paused"])
+        call("run.resume")
+        self.assertEqual(call("run.time_scale", {"scale": 0.5})["time_scale"], 0.5)
+        call("run.time_scale", {"scale": 1.0})
+
+        call("input.action", {"name": "ui_accept", "pressed": True})
+        call("input.action", {"name": "ui_accept", "pressed": False})
+        call("input.key", {"keycode": 32, "pressed": True})
+        call("input.key", {"keycode": 32, "pressed": False})
+
+        shot = self.run_gai("agent", "call", "render.screenshot", '{"path":"user://shot.png"}')
+        self.assertEqual(shot.returncode, 1)
+        self.assertIn("display", shot.stderr)
 
         stop = self.run_gai("agent", "stop")
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)

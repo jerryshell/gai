@@ -186,6 +186,33 @@ class UpstreamTest(unittest.TestCase):
         self.assertEqual((self.repo.root / "core/os/os.cpp").read_text(), "// upstream change\n")
         self.assert_fork_ok()
 
+    def test_merge_warns_on_unclaimed_game_change(self):
+        self.repo.write("editor/game.cpp", "// game change\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "game engine change")
+        self.make_upstream({"core/os/os.cpp": "// upstream change\n"})
+        result = self.repo.gai("upstream", "merge", "4.8.0-stable")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("warning", result.stdout)
+        self.assertIn("editor/game.cpp", result.stdout)
+        self.assertEqual(self.state()["tag"], "4.8.0-stable")
+        check = self.repo.gai("upstream", "check")
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn("warning", check.stdout)
+
+    def test_merge_strict_stops_on_unclaimed_game_change(self):
+        self.repo.write("editor/game.cpp", "// game change\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "game engine change")
+        self.make_upstream({"core/os/os.cpp": "// upstream change\n"})
+        result = self.repo.gai("upstream", "merge", "--strict", "4.8.0-stable")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unclaimed engine changes", result.stdout)
+        self.assertIn("editor/game.cpp", result.stdout)
+        abort = self.repo.gai("upstream", "abort")
+        self.assertEqual(abort.returncode, 0, abort.stdout + abort.stderr)
+        self.assertEqual(self.state()["tag"], "4.7.2-stable")
+
     def test_readme_conflict_then_continue(self):
         self.make_upstream({"README.md": "# upstream readme\n"})
         result = self.repo.gai("upstream", "merge", "4.8.0-stable")
@@ -213,13 +240,17 @@ class UpstreamTest(unittest.TestCase):
         )
         self.assertEqual((self.repo.root / "README.md").read_text(), "# test game\n")
 
-    def test_unclaimed_engine_edit_fails(self):
+    def test_unclaimed_engine_edit_warns_and_strict_fails(self):
         self.repo.write("editor/evil.cpp", "// no feature owns this\n")
         self.repo.git("add", "-A")
         self.repo.git("commit", "-q", "-m", "unclaimed engine edit")
         result = self.repo.gai("upstream", "check")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("unclaimed engine changes", result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("warning", result.stdout)
+        self.assertIn("editor/evil.cpp", result.stdout)
+        strict = self.repo.gai("upstream", "check", "--strict")
+        self.assertEqual(strict.returncode, 1)
+        self.assertIn("unclaimed engine changes", strict.stdout)
         self.assertIn("editor/evil.cpp", result.stdout)
 
     def test_claimed_engine_edit_is_allowed(self):
@@ -228,11 +259,15 @@ class UpstreamTest(unittest.TestCase):
         self.repo.git("commit", "-q", "-m", "claimed engine edit")
         self.assert_fork_ok()
 
-    def test_untracked_unclaimed_file_fails(self):
+    def test_untracked_unclaimed_file_warns_and_strict_fails(self):
         self.repo.write("editor/evil.cpp", "// untracked\n")
         result = self.repo.gai("upstream", "check")
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("warning", result.stdout)
         self.assertIn("editor/evil.cpp", result.stdout)
+        strict = self.repo.gai("upstream", "check", "--strict")
+        self.assertEqual(strict.returncode, 1)
+        self.assertIn("editor/evil.cpp", strict.stdout)
 
     def test_deleting_a_required_file_fails(self):
         self.repo.git("rm", "game/project.godot")
@@ -291,7 +326,7 @@ class UpstreamTest(unittest.TestCase):
         self.repo.write("modules/planned/thing.cpp", "// planned\n")
         self.repo.git("add", "-A")
         self.repo.git("commit", "-q", "-m", "planned path edit")
-        result = self.repo.gai("upstream", "check")
+        result = self.repo.gai("upstream", "check", "--strict")
         self.assertEqual(result.returncode, 1)
         self.assertIn("modules/planned/thing.cpp", result.stdout)
 
@@ -301,7 +336,9 @@ class UpstreamTest(unittest.TestCase):
         path.write_text(json.dumps(data, indent=2) + "\n")
         self.repo.git("add", ".gai/features/planned-engine.json")
         self.repo.git("commit", "-q", "-m", "activate planned feature")
-        self.assert_fork_ok()
+        strict = self.repo.gai("upstream", "check", "--strict")
+        self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        self.assertIn("fork: ok", strict.stdout)
 
     def test_unknown_feature_status_fails(self):
         path = self.repo.root / ".gai" / "features" / "branding.json"
@@ -319,10 +356,20 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn("?? editor/tmp_t.cpp (unclaimed)", result.stdout)
         self.assertIn("unclaimed: 1", result.stdout)
 
-    def test_doctor_reports_untracked_engine_file(self):
+    def test_doctor_warns_on_untracked_engine_file(self):
+        fake = self.repo.root / "bin" / "fake-godot"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then echo 4.7.2.stable; exit 0; fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        self.repo.env["GAI_GODOT"] = str(fake)
         self.repo.write("editor/tmp_t.cpp", "// untracked\n")
         result = self.repo.gai("doctor")
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("warning", result.stdout)
         self.assertIn("untracked files with no owner", result.stdout)
 
 

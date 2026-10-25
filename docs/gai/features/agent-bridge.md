@@ -1,94 +1,111 @@
 # Engine agent bridge
 
-Status: active, first slice
+Status: active
 Risk: medium
 Manifest: `.gai/features/agent-bridge.json`
 
-## What works
+## What it is
 
-`bin/gai agent start` starts the game headless with `GAI_AGENT_PORT` and
-`GAI_AGENT_TOKEN`. The module `modules/gai_agent/` listens on 127.0.0.1 and
-speaks JSON-RPC 2.0 over newline-delimited JSON. The CLI can read the scene
-tree, read node properties, and set a property.
+A JSON-RPC 2.0 server inside the gai engine. It exposes the engine's own
+reflection and an object handle model, so an agent can reach every class,
+property, method, signal, and singleton. It does not wrap each feature one at a
+time. Subsystem methods cover the common operations, and `object.call` reaches
+everything else.
 
-- The token is random per session. The CLI stores the pid, port, token, engine,
-  and process start time in `.gai/agent.json` with mode 600. Git ignores the
-  file. `agent start` and `agent stop` take a lock.
-- The server binds 127.0.0.1 only. It serves one client at a time. A request
-  must finish within 10 seconds. A new idle client replaces an idle connection;
-  extra connections during a request are dropped. The server closes after one
-  response. A notification gets no response.
-- The server uses the engine `jsonrpc` module for dispatch and error responses.
-  gai buffers newline-delimited frames and writes responses with
-  `put_partial_data`, so a slow reader does not block the game frame.
-- A node path or property error is a JSON-RPC `-32602` error. The CLI exits 1.
-- `bin/gai agent start` refuses the downloaded engine. The bridge is only in a
-  source build with `modules/gai_agent/`.
-- `agent stop` verifies the process start time and the engine path before it
-  sends a signal. A reused pid is not killed.
+## Modes
 
-## Commands
+- Runtime: `bin/gai agent start` starts the game headless. Add `--display` for
+  rendering and screenshots.
+- Editor: `bin/gai agent start --editor` starts the editor. Its singletons,
+  including `EditorInterface`, are reachable. `scene.tree` shows the editor tree;
+  use `EditorInterface.get_edited_scene_root` for the edited scene.
+
+## Handles
+
+- A handle is the engine `ObjectID` as a decimal string.
+- `scene.tree`, `object.singleton`, `classdb.instantiate`, and `resource.load`
+  return handles.
+- Pass a handle as a string in `handle`. Pass an object argument as
+  `{"$handle": "<id>"}`. Other engine values use Godot text, such as
+  `"Vector2(10, 20)"`.
+- Loaded resources and RefCounted objects stay alive in the bridge until
+  `object.free` or shutdown. Tree nodes live in the scene tree.
+
+## Reflection
+
+| Namespace | Methods | What it reaches |
+| --- | --- | --- |
+| `classdb` | `classes`, `class`, `instantiate` | Every class, its properties, methods, signals, constants, and enums. |
+| `object` | `get`, `set`, `call`, `properties`, `methods`, `signals`, `singleton`, `free` | Any live object, any property, any method, any signal list. |
+| `api` | `methods`, `singletons` | The bridge surface and the engine singleton registry. |
+
+`object.singleton` reaches `Engine`, `OS`, `ProjectSettings`, `Input`,
+`PhysicsServer2D`, `PhysicsServer3D`, `RenderingServer`, `AudioServer`,
+`NavigationServer2D`, `NavigationServer3D`, `EditorInterface`, and every other
+registered singleton. This is the completeness path: if `ClassDB` knows it,
+the agent can discover and call it.
+
+## Subsystems
+
+| Namespace | Methods | Notes |
+| --- | --- | --- |
+| `scene` | `tree`, `current`, `change` | Tree includes handles. |
+| `node` | `get`, `set`, `create`, `delete`, `reparent`, `add_child` | Path based. |
+| `resource` | `load`, `save` | Engine resources, not shell file access. |
+| `project` | `get`, `set`, `save` | Project settings. |
+| `run` | `status`, `pause`, `resume`, `step`, `time_scale`, `quit` | `step` restores the previous pause state. |
+| `input` | `action`, `key`, `mouse` | Injects input events. |
+| `render` | `screenshot` | Needs a display; headless returns an error. |
+
+## CLI
 
 ```sh
 bin/gai agent start
-bin/gai agent status
-bin/gai agent tree
-bin/gai agent get /root/Main --property visible
-bin/gai agent set /root/Main visible false
+bin/gai agent methods
+bin/gai agent call classdb.classes '{}'
+bin/gai agent call classdb.class '{"name":"Node2D"}'
+bin/gai agent call object.singleton '{"name":"PhysicsServer3D"}'
+bin/gai agent call object.methods '{"handle":"<handle>"}'
+bin/gai agent call object.call '{"handle":"<handle>","method":"get_class","args":[]}'
+bin/gai agent log
 bin/gai agent stop
 ```
 
-## Methods
+`bin/gai agent log` tails the game output. `bin/gai agent call` is the generic
+path: any bridge method can be called without a new CLI command. `tree`, `get`,
+and `set` remain path-based sugar.
 
-| Method | State | Result |
-| --- | --- | --- |
-| `ping` | implemented | Engine name and process id. |
-| `scene.tree` | implemented | Recursive node tree with names, types, paths, and scripts. |
-| `node.get` | implemented | Node info plus the requested properties. |
-| `node.set` | implemented | Set one property. Returns the new value. |
-| `node.call` | planned | Call a method with JSON arguments. |
-| `run.start` | planned | Start the main scene or a named scene. |
-| `run.stop` | planned | Stop the running scene. |
-| `run.status` | planned | Running state, frame count, and current scene. |
-| `input.action` | planned | Press or release an input action for N frames. |
-| `input.key` | planned | Send a key event. |
-| `input.mouse` | planned | Move or click at viewport coordinates. |
-| `screenshot` | planned | Capture the viewport to a PNG path. |
-| `log.tail` | planned | Return recent engine and game output. |
-| `test.run` | planned | Run a scene for N frames and collect errors. |
+## Security
+
+- A random token per session. It is stored in `.gai/agent.json` with mode 600.
+- Bind 127.0.0.1 only.
+- One client at a time. A request must finish within 10 seconds. An idle client
+  is replaced; an extra connection during a request is dropped.
+- `agent stop` checks the process start time and engine path before signalling.
+- Full access is intentional. The engine source is fully editable, so the agent
+  can add bridge methods when a capability needs one.
 
 ## Tests
-
-Run the tests with:
 
 ```sh
 python3 tests/test_agent.py
 ```
 
-The tests copy `game/` to a temporary directory, start the bridge, read the
-tree, change `visible`, and read it back. They also check the auth and parse
-errors, the state file mode, a second start, concurrent starts, and that stop
-does not kill a foreign pid. They need the gai source build. CI does not
-run them without an engine build.
-
-## Build
-
-`bin/gai bootstrap` builds the gai source engine by default, and the source
-build includes the module. The official fallback does not. `bin/gai agent start`
-refuses the fallback with a clear message.
-
-The module depends on the `jsonrpc` module, which is on by default. If you
-disable `jsonrpc`, the gai module does not build.
+Five tests: scene get/set and auth, capability surface, editor mode, concurrent
+start, and foreign PID safety. They need a source build. CI does not build the
+engine yet, so it skips them.
 
 ## Not yet
 
-- Run control, input injection, screenshots, log tail, and test scenes.
-- Editor mode. The current server runs in the game process.
-- Batch requests, more than one client, and binding the port inside the engine.
-- A prebuilt gai engine for users who do not build. Today the first run builds
-  the engine from source.
+- Event subscriptions and streaming. The agent polls.
+- Multiple clients and batch requests.
+- Export helpers. Export internals are reachable through editor objects when
+  they are exposed as singletons or objects.
+- Screenshots in headless CI. Use `--display` with a virtual display.
+- A prebuilt gai engine. The first build is from source.
 
 ## Upstream risk
 
-Medium. The feature is a new module with no main or editor hook. It depends on
-the `jsonrpc` module and the TCP and JSON APIs, which upstream can change.
+Medium. The module depends on `ClassDB`, `Object`, the singleton registry, the
+`jsonrpc` module, and the TCP/JSON APIs. Upstream changes to those surfaces can
+break it.

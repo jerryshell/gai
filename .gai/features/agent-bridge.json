@@ -11,5 +11,5 @@
   "tests": [
     "tests/test_agent.py"
   ],
-  "notes": "Headless runtime JSON-RPC bridge: scene.tree, node.get, node.set. Run control, input, screenshots, and editor mode are planned."
+  "notes": "Runtime and editor JSON-RPC bridge. Exposes ClassDB/Object reflection, singletons, object handles, scene/node/resource/project/run/input/screenshot methods, and a generic CLI call."
 }

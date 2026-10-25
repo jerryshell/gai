@@ -48,21 +48,27 @@ agent bridge. `bin/gai bootstrap --official` uses it.
 - `bin/gai check` imports assets, parses every script, runs the main scene, and
   fails on errors. Godot exits 0 on a script error. This command does not. It
   also fails when the engine does not match the recorded upstream base.
-- `bin/gai agent start/tree/get/set` inspects and edits a running headless game.
-  The gai source build includes the bridge. `bootstrap` builds it by default;
-  the official fallback does not include it.
+- `bin/gai agent` starts the game or editor and exposes the engine's
+  reflection: every class, property, method, signal, and singleton through
+  handles, plus scene, node, resource, project, run, input, and screenshot
+  methods. `agent call` reaches any method. The gai source build includes it;
+  the official fallback does not.
 - `game/` holds a small 2D scene that runs. Replace it.
 
 ## Deep fork, not a thin layer
 
-Every engine change belongs to a feature in `.gai/features/`. Active features
-own their paths. `bin/gai upstream check` fails on an engine path with no owner,
-not on the change itself. `bin/gai upstream report` lists the features, the
-changed paths, and the unclaimed paths.
+The clone contains the whole engine source. The agent can read it and change any
+file when a game requirement needs it. `bin/gai bootstrap` rebuilds the engine
+after an engine change.
+
+gai's own engine changes are tracked by features in `.gai/features/`. Your game
+can also change engine files; those changes show as unclaimed in
+`bin/gai upstream report`. `bin/gai upstream check` warns about them. gai's
+canonical CI runs `--strict`; your clone does not.
 
 Upstream merges are expected to conflict. The feature that owns a file resolves
-its conflict, rebuilds the engine, and reruns its tests. See
-`docs/gai/upstream.md`.
+its conflict, or you resolve it as a game change, then rebuild and rerun the
+tests. See `docs/gai/upstream.md`.
 
 ## What is here
 
@@ -76,9 +82,10 @@ its conflict, rebuilds the engine, and reruns its tests. See
 
 ## Roadmap
 
-- **Engine agent bridge.** The headless runtime bridge works: scene tree,
-  node get, and node set. Run control, input, screenshots, logs, test scenes,
-  and editor mode are planned. Design: `docs/gai/features/agent-bridge.md`.
+- **Engine agent bridge.** Runtime and editor reflection work: every class,
+  property, method, signal, and singleton is reachable. Event streams, export
+  helpers, and multiple clients are planned. Design:
+  `docs/gai/features/agent-bridge.md`.
 - **C# .NET web export.** Upstream 4.7.2 refuses it. The available patch targets
   4.8-dev and Windows. It needs a custom engine build. Design:
   `docs/gai/features/dotnet-web.md`.
@@ -88,10 +95,10 @@ its conflict, rebuilds the engine, and reruns its tests. See
 
 Version 0.1.0. The display name is gai. Internal identifiers and the binary name
 stay `godot` while the build system depends on them. The editor icon, splash,
-and UI strings are still Godot. The agent bridge works in the gai source build, which
-`bootstrap` builds by default, for headless scene inspection and node edits. The
-official fallback lacks it. Run control, input, screenshots, editor mode, and
-the .NET web export are not implemented.
+and UI strings are still Godot. The agent bridge exposes the engine's reflection in runtime and editor
+modes. It works in the gai source build, which `bootstrap` builds by default.
+The official fallback lacks it. Screenshots need a display. Event streams,
+export helpers, and the .NET web export are not implemented.
 
 Tested on Linux. The macOS and Windows install paths are implemented but not
 tested in this release.

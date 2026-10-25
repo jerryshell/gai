@@ -753,8 +753,14 @@ def _cmd_agent_start(args) -> int:
     env["GAI_AGENT_TOKEN"] = token
     AGENT_LOG.write_text("", encoding="utf-8")
     with AGENT_LOG.open("wb") as log:
+        command = [str(engine)]
+        if not args.display:
+            command.append("--headless")
+        command += ["--path", str(GAME_DIR)]
+        if args.editor:
+            command.append("--editor")
         process = subprocess.Popen(
-            [str(engine), "--headless", "--path", str(GAME_DIR)],
+            command,
             cwd=str(ROOT),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -860,6 +866,30 @@ def cmd_agent_set(args) -> int:
         {"path": args.path, "property": args.property, "value": value},
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_agent_call(args) -> int:
+    try:
+        params = json.loads(args.params)
+    except json.JSONDecodeError as exc:
+        die(f"params must be JSON: {exc}")
+    print(json.dumps(agent_result(args.method, params), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_agent_methods(args) -> int:
+    print(json.dumps(agent_result("api.methods"), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_agent_log(args) -> int:
+    try:
+        lines = AGENT_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+    except FileNotFoundError:
+        die("no agent log yet. Run `bin/gai agent start` first.")
+    for line in lines[-args.lines:]:
+        print(line)
     return 0
 
 
@@ -1012,26 +1042,40 @@ def cmd_upstream_check(args) -> int:
     state = load_upstream()
     check_base(state)
     features = load_features()
-    unclaimed = unclaimed_changes(state["commit"], features=features)
-    if unclaimed:
-        print_unclaimed(unclaimed)
-        return 1
     missing = missing_required(state)
     if missing:
         print_missing(missing)
         return 1
+    unclaimed = unclaimed_changes(state["commit"], features=features)
     untracked = untracked_violations()
+    strict = getattr(args, "strict", False)
+
+    if strict and (unclaimed or untracked):
+        if unclaimed:
+            print_unclaimed(unclaimed)
+        if untracked:
+            print("fork: untracked files with no owner")
+            for _, path in untracked:
+                print(f"  {path}")
+        return 1
+
+    if unclaimed:
+        print("warning: engine changes with no feature owner")
+        for status, path in unclaimed:
+            print(f"  {status} {path}")
+        print("Run `bin/gai upstream report` for the merge risk. Add a feature only if gai should maintain the change.")
     if untracked:
-        print("fork: untracked files with no owner")
+        print("warning: untracked files with no owner")
         for _, path in untracked:
             print(f"  {path}")
-        print("Move the file to a workspace path, or claim it in `.gai/features/`.")
-        return 1
+
     changed = git("diff", "--name-only", state["commit"], "HEAD").stdout.splitlines()
     active = sum(1 for feature in features if feature.get("status") == "active")
+    warns = len(unclaimed) + len(untracked)
+    suffix = f"; {warns} warnings" if warns else ""
     print(f"base {state['tag']} {state['commit'][:8]}")
     print(f"features: {len(features)} ({active} active)")
-    print(f"fork: ok ({len(changed)} files since base)")
+    print(f"fork: ok ({len(changed)} files since base{suffix})")
     return 0
 
 
@@ -1157,13 +1201,18 @@ def tag_for_commit(commit: str) -> str:
     return sorted(tags)[-1] if tags else f"upstream@{commit[:8]}"
 
 
-def finalize_merge(commit: str) -> int:
+def finalize_merge(commit: str, strict: bool = False) -> int:
     state = load_upstream()
     features = load_features()
     unclaimed = unclaimed_changes(commit, staged=True, features=features)
-    if unclaimed:
+    if unclaimed and strict:
         print_unclaimed(unclaimed)
         return 1
+    if unclaimed:
+        print("warning: engine changes with no feature owner")
+        for status, path in unclaimed:
+            print(f"  {status} {path}")
+        print("The merge will continue. Add a feature only if gai should maintain these changes.")
     missing = missing_required(state, staged=True)
     if missing:
         print_missing(missing)
@@ -1210,7 +1259,7 @@ def cmd_upstream_merge(args) -> int:
         if "version.py" in conflicts and resolve_version_conflict():
             conflicts = unmerged_files()
             if not conflicts:
-                return finalize_merge(commit)
+                return finalize_merge(commit, getattr(args, "strict", False))
         if conflicts:
             print_conflict_help(conflicts)
             return 1
@@ -1219,7 +1268,7 @@ def cmd_upstream_merge(args) -> int:
 
     if not merge_in_progress():
         die("merge produced no changes")
-    return finalize_merge(commit)
+    return finalize_merge(commit, getattr(args, "strict", False))
 
 
 def cmd_upstream_continue(args) -> int:
@@ -1231,7 +1280,7 @@ def cmd_upstream_continue(args) -> int:
         print_conflict_help(conflicts)
         return 1
     merge_head = git("rev-parse", "MERGE_HEAD").stdout.strip()
-    return finalize_merge(merge_head)
+    return finalize_merge(merge_head, getattr(args, "strict", False))
 
 
 def cmd_upstream_abort(args) -> int:
@@ -1245,6 +1294,7 @@ def cmd_upstream_abort(args) -> int:
 
 def cmd_doctor(args) -> int:
     problems = []
+    warnings = []
     print(f"gai {gai_version()}")
     print(f"repo {ROOT}")
     print(f"python {platform.python_version()}")
@@ -1261,10 +1311,10 @@ def cmd_doctor(args) -> int:
     else:
         unclaimed = unclaimed_changes(state["commit"])
         if unclaimed:
-            problems.append(f"{len(unclaimed)} unclaimed engine changes")
+            warnings.append(f"{len(unclaimed)} unclaimed engine changes")
         untracked = untracked_violations()
         if untracked:
-            problems.append(f"{len(untracked)} untracked files with no owner")
+            warnings.append(f"{len(untracked)} untracked files with no owner")
         missing = missing_required(state)
         if missing:
             problems.append(f"{len(missing)} required files are missing")
@@ -1289,10 +1339,17 @@ def cmd_doctor(args) -> int:
         problems.extend(version_problems(engine, state))
 
     if problems:
-        print(f"status: {len(problems)} problems")
+        print(f"status: {len(problems)} problems, {len(warnings)} warnings")
         for problem in problems:
             print(f"  {problem}")
+        for warning in warnings:
+            print(f"  warning: {warning}")
         return 1
+    if warnings:
+        print(f"status: ok ({len(warnings)} warnings)")
+        for warning in warnings:
+            print(f"  warning: {warning}")
+        return 0
     print("status: ok")
     return 0
 
@@ -1345,7 +1402,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     agent = sub.add_parser("agent", help="inspect and edit a running game")
     agent_sub = agent.add_subparsers(dest="agent_command", required=True)
-    agent_start = agent_sub.add_parser("start", help="start the headless game with the bridge")
+    agent_start = agent_sub.add_parser("start", help="start the game with the bridge")
+    agent_start.add_argument(
+        "--display",
+        action="store_true",
+        help="run with a display so render.screenshot works",
+    )
+    agent_start.add_argument(
+        "--editor",
+        action="store_true",
+        help="start the editor instead of the game",
+    )
     agent_start.set_defaults(func=cmd_agent_start)
     agent_stop = agent_sub.add_parser("stop", help="stop the bridge and the game")
     agent_stop.set_defaults(func=cmd_agent_stop)
@@ -1362,6 +1429,15 @@ def build_parser() -> argparse.ArgumentParser:
     agent_set.add_argument("property")
     agent_set.add_argument("value", help="JSON value, or Godot text such as Vector2(10, 20)")
     agent_set.set_defaults(func=cmd_agent_set)
+    agent_call = agent_sub.add_parser("call", help="call any bridge method with JSON params")
+    agent_call.add_argument("method")
+    agent_call.add_argument("params", nargs="?", default="{}", help="JSON object (default: {})")
+    agent_call.set_defaults(func=cmd_agent_call)
+    agent_methods = agent_sub.add_parser("methods", help="list bridge methods")
+    agent_methods.set_defaults(func=cmd_agent_methods)
+    agent_log = agent_sub.add_parser("log", help="tail the game log")
+    agent_log.add_argument("--lines", type=int, default=80)
+    agent_log.set_defaults(func=cmd_agent_log)
 
     engine = sub.add_parser("engine", help="manage the official fallback engine")
     engine_sub = engine.add_subparsers(dest="engine_command", required=True)
@@ -1375,14 +1451,32 @@ def build_parser() -> argparse.ArgumentParser:
     upstream_sub = upstream.add_subparsers(dest="upstream_command", required=True)
     status = upstream_sub.add_parser("status", help="show the recorded base and merge state")
     status.set_defaults(func=cmd_upstream_status)
-    check_parser = upstream_sub.add_parser("check", help="fail if an engine change has no feature owner")
+    check_parser = upstream_sub.add_parser(
+        "check",
+        help="warn about engine changes with no feature owner; --strict fails",
+    )
+    check_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail on unclaimed engine changes (gai's canonical CI)",
+    )
     check_parser.set_defaults(func=cmd_upstream_check)
     report = upstream_sub.add_parser("report", help="list features, changed files, and unclaimed paths")
     report.set_defaults(func=cmd_upstream_report)
     merge = upstream_sub.add_parser("merge", help="fetch and merge an upstream tag")
     merge.add_argument("ref", help="tag or commit to merge")
+    merge.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail on engine changes with no feature owner (gai's canonical CI)",
+    )
     merge.set_defaults(func=cmd_upstream_merge)
     cont = upstream_sub.add_parser("continue", help="finish a merge after resolving conflicts")
+    cont.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail on engine changes with no feature owner",
+    )
     cont.set_defaults(func=cmd_upstream_continue)
     abort = upstream_sub.add_parser("abort", help="abort the current merge")
     abort.set_defaults(func=cmd_upstream_abort)
@@ -1397,4 +1491,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        sys.exit(0)

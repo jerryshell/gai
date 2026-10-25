@@ -17,9 +17,43 @@
 
 GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("ping", callable_mp(this, &GaiAgentServer::_rpc_ping));
+	rpc.set_method("api.methods", callable_mp(this, &GaiAgentServer::_rpc_api_methods));
+	rpc.set_method("api.singletons", callable_mp(this, &GaiAgentServer::_rpc_api_singletons));
+	rpc.set_method("classdb.classes", callable_mp(this, &GaiAgentServer::_rpc_classdb_classes));
+	rpc.set_method("classdb.class", callable_mp(this, &GaiAgentServer::_rpc_classdb_class));
+	rpc.set_method("classdb.instantiate", callable_mp(this, &GaiAgentServer::_rpc_classdb_instantiate));
+	rpc.set_method("object.get", callable_mp(this, &GaiAgentServer::_rpc_object_get));
+	rpc.set_method("object.set", callable_mp(this, &GaiAgentServer::_rpc_object_set));
+	rpc.set_method("object.call", callable_mp(this, &GaiAgentServer::_rpc_object_call));
+	rpc.set_method("object.properties", callable_mp(this, &GaiAgentServer::_rpc_object_properties));
+	rpc.set_method("object.methods", callable_mp(this, &GaiAgentServer::_rpc_object_methods));
+	rpc.set_method("object.signals", callable_mp(this, &GaiAgentServer::_rpc_object_signals));
+	rpc.set_method("object.singleton", callable_mp(this, &GaiAgentServer::_rpc_object_singleton));
+	rpc.set_method("object.free", callable_mp(this, &GaiAgentServer::_rpc_object_free));
 	rpc.set_method("scene.tree", callable_mp(this, &GaiAgentServer::_rpc_scene_tree));
+	rpc.set_method("scene.current", callable_mp(this, &GaiAgentServer::_rpc_scene_current));
+	rpc.set_method("scene.change", callable_mp(this, &GaiAgentServer::_rpc_scene_change));
 	rpc.set_method("node.get", callable_mp(this, &GaiAgentServer::_rpc_node_get));
 	rpc.set_method("node.set", callable_mp(this, &GaiAgentServer::_rpc_node_set));
+	rpc.set_method("node.create", callable_mp(this, &GaiAgentServer::_rpc_node_create));
+	rpc.set_method("node.delete", callable_mp(this, &GaiAgentServer::_rpc_node_delete));
+	rpc.set_method("node.reparent", callable_mp(this, &GaiAgentServer::_rpc_node_reparent));
+	rpc.set_method("node.add_child", callable_mp(this, &GaiAgentServer::_rpc_node_add_child));
+	rpc.set_method("resource.load", callable_mp(this, &GaiAgentServer::_rpc_resource_load));
+	rpc.set_method("resource.save", callable_mp(this, &GaiAgentServer::_rpc_resource_save));
+	rpc.set_method("project.get", callable_mp(this, &GaiAgentServer::_rpc_project_get));
+	rpc.set_method("project.set", callable_mp(this, &GaiAgentServer::_rpc_project_set));
+	rpc.set_method("project.save", callable_mp(this, &GaiAgentServer::_rpc_project_save));
+	rpc.set_method("run.status", callable_mp(this, &GaiAgentServer::_rpc_run_status));
+	rpc.set_method("run.pause", callable_mp(this, &GaiAgentServer::_rpc_run_pause));
+	rpc.set_method("run.resume", callable_mp(this, &GaiAgentServer::_rpc_run_resume));
+	rpc.set_method("run.step", callable_mp(this, &GaiAgentServer::_rpc_run_step));
+	rpc.set_method("run.time_scale", callable_mp(this, &GaiAgentServer::_rpc_run_time_scale));
+	rpc.set_method("run.quit", callable_mp(this, &GaiAgentServer::_rpc_run_quit));
+	rpc.set_method("input.action", callable_mp(this, &GaiAgentServer::_rpc_input_action));
+	rpc.set_method("input.key", callable_mp(this, &GaiAgentServer::_rpc_input_key));
+	rpc.set_method("input.mouse", callable_mp(this, &GaiAgentServer::_rpc_input_mouse));
+	rpc.set_method("render.screenshot", callable_mp(this, &GaiAgentServer::_rpc_render_screenshot));
 }
 
 GaiAgentServer::~GaiAgentServer() {
@@ -83,6 +117,13 @@ void GaiAgentServer::_drop_client() {
 void GaiAgentServer::poll() {
 	if (!server.is_valid() || !server->is_listening()) {
 		return;
+	}
+	if (step_frames > 0) {
+		step_frames--;
+		if (step_frames == 0 && step_restore_pause && tree != nullptr) {
+			tree->set_pause(true);
+			step_restore_pause = false;
+		}
 	}
 	const uint64_t now = OS::get_singleton()->get_ticks_msec();
 	while (server->is_connection_available()) {
@@ -228,6 +269,13 @@ Node *GaiAgentServer::_node_for(const String &p_path) {
 }
 
 Variant GaiAgentServer::_json_value(const Variant &p_value) {
+	if (p_value.get_type() == Variant::OBJECT) {
+		Object *object = p_value;
+		if (object != nullptr) {
+			return _object_info(object);
+		}
+		return Variant();
+	}
 	switch (p_value.get_type()) {
 		case Variant::NIL:
 		case Variant::BOOL:
@@ -247,6 +295,7 @@ Dictionary GaiAgentServer::_node_info(Node *p_node, const Array &p_properties) {
 	info["name"] = String(p_node->get_name());
 	info["type"] = p_node->get_class();
 	info["path"] = String(p_node->get_path());
+	info["handle"] = _handle(p_node);
 
 	const Variant script_variant = p_node->get_script();
 	if (script_variant.get_type() == Variant::OBJECT) {

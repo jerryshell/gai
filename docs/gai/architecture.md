@@ -19,9 +19,10 @@ The user clones the repo, opens pi or opencode, and describes a game. The agent
 runs `bin/gai bootstrap`, which builds the gai engine from source if needed and
 checks the game. The user does not run setup commands.
 
-## Features own divergence
+## Features own gai's divergence
 
-Every engine change belongs to a feature in `.gai/features/`:
+gai's engine changes belong to features in `.gai/features/`. Your game can edit
+the engine directly; those changes show as unclaimed in the report.
 
 ```json
 {
@@ -37,13 +38,14 @@ Every engine change belongs to a feature in `.gai/features/`:
 - `active` features own their paths. `bin/gai upstream check` accepts changes
   there.
 - `planned` features reserve paths but do not own them. Set `status` to `active`
-  before the first engine edit.
+  before the first edit that gai should maintain.
 - `risk` is the expected conflict cost at the next upstream merge. High-risk
   features need a build and a test after every merge.
 
-`bin/gai upstream check` fails when an engine path has no active feature. It does
-not fail because the engine changed. The rule is ownership, not a size limit.
-`bin/gai upstream report` lists features, changed paths, and unclaimed paths.
+`bin/gai upstream check` warns when an engine path has no feature owner.
+`--strict` fails, and gai's canonical CI uses it. A game can edit the engine
+without a feature; `bin/gai upstream report` lists the unclaimed paths and the
+merge risk.
 
 ## Upstream tracking
 
@@ -56,18 +58,17 @@ Rebase rewrites public history. Vendoring loses ancestry. Merge keeps both.
 ## The AI-native center
 
 The engine must be usable by an agent, not only by a person with a mouse. The
-first vertical feature is the engine agent bridge. The first slice runs in the
-headless game:
+engine agent bridge exposes the engine's own reflection and object handles:
 
-- scene tree inspection;
-- node property read and write;
-- a local JSON-RPC server with a per-session token.
+- every class, property, method, signal, and singleton through `ClassDB` and
+  `Object`;
+- scene, node, resource, project, run, input, and screenshot methods;
+- runtime and editor modes.
 
-`bin/gai` is the client. The bridge runs inside the headless game, bound to
-localhost. The current CLI cannot see live editor state. The bridge closes that
-gap for the running game. Run control, input injection, screenshots, log tail,
-test scenes, and editor mode are planned. The design is in
-`features/agent-bridge.md`.
+An agent needs no new wrapper when the engine exposes a feature through
+`ClassDB` or a singleton. It discovers with `classdb.classes`, inspects with
+`object.properties/methods/signals`, and calls with `object.call`. The design is
+in `features/agent-bridge.md`.
 
 ## Build gate
 
@@ -94,5 +95,5 @@ does not match the base tag. This is the game gate.
 - A shallow clone cannot run `upstream check`.
 - The .NET web export is planned, not implemented. It needs a custom engine
   build.
-- The agent bridge is implemented for the headless runtime: scene tree, node
-  get, node set. Run control, input, screenshots, and editor mode are planned.
+- The agent bridge exposes runtime and editor reflection. Event streams,
+  export helpers, and multiple clients are planned. Screenshots need a display.

@@ -16,8 +16,9 @@ bin/gai upstream merge 4.8-stable
 ```
 
 The command adds the `upstream` remote when it is missing, fetches tags, runs
-`git merge --no-commit --no-ff`, checks that every changed engine path has an
-active feature, records the base in `.gai/upstream.json`, and commits.
+`git merge --no-commit --no-ff`, records the base in `.gai/upstream.json`, and
+commits. Engine changes without a feature owner produce a warning. Use
+`--strict` to stop on them; that is the rule for gai's canonical maintenance.
 
 If `version.py` conflicts, the command resolves it as part of the `branding`
 feature. It takes upstream's file and re-applies our `name` and `website`. The
@@ -38,8 +39,8 @@ merge conflicts:
   feature behavior.
 - Workspace conflicts, such as `README.md` and docs, are resolved by whoever owns
   the workspace.
-- An unclaimed conflict is a missing feature manifest. Add one, or activate the
-  feature that should own the file, before you resolve it.
+- A conflict in a game-specific engine change is yours. Resolve it as a game
+  change. Add a feature only if gai should maintain the change.
 
 Then:
 
@@ -84,8 +85,8 @@ If Godot changes the release asset names, update `RELEASES` in `bin/gai`.
 ## What not to do
 
 - Do not rebase `main`. People clone it.
-- Do not resolve a conflict in a file your feature does not own. Add or update
-  the owner instead.
+- Do not drop a game change silently. Update a gai feature record if the file is
+  a gai feature; otherwise resolve it as a game change.
 - Do not move the base by hand. The merge command owns `.gai/upstream.json`.
 - Do not merge with a dirty tree.
 - Do not call the merge done before the engine builds.
@@ -94,6 +95,7 @@ If Godot changes the release asset names, update `RELEASES` in `bin/gai`.
 
 ```sh
 bin/gai upstream check
+bin/gai upstream check --strict
 bin/gai upstream report
 ```
 

@@ -19,9 +19,10 @@ design limit.
 ## Decision
 
 - gai is a deep fork. Engine changes are part of the product.
-- Every engine change is claimed by an active feature in `.gai/features/`.
-- `bin/gai upstream check` enforces ownership, not a size limit. It fails on an
-  engine path that no active feature claims.
+- gai's own engine changes are claimed by an active feature in `.gai/features/`.
+- `bin/gai upstream check` warns about engine paths with no feature owner.
+  `--strict` fails; gai's canonical CI uses it. A game can edit the engine
+  without a feature record.
 - `main` merges Godot tags. Conflicts are expected. The feature that claims a
   file resolves its conflict, rebuilds the engine, and reruns its tests.
 - A build gate is required. The current CI does not build the engine yet, and
@@ -41,7 +42,7 @@ design limit.
 ## Consequences
 
 - Upstream merges cost more. High-risk features pay for a build and a test after
-  every merge.
+  every merge. A game's unclaimed engine changes are its own to resolve.
 - The repository can implement deep engine features, including .NET web export,
   subject to build cost and platform support.
 - The allowlist model and its guard are removed.
