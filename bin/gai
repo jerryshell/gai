@@ -124,6 +124,17 @@ def built_engine():
     return found[0]
 
 
+def installed_engine():
+    for candidate in (
+        BIN_DIR / "godot",
+        BIN_DIR / "godot.exe",
+        BIN_DIR / "Godot.app" / "Contents" / "MacOS" / "Godot",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def find_engine():
     candidates = []
     override = os.environ.get("GAI_GODOT")
@@ -152,7 +163,10 @@ def find_engine():
 def require_engine() -> Path:
     engine = find_engine()
     if engine is None:
-        die("no engine found. Run `bin/gai engine install`, or set `GAI_GODOT`.")
+        die(
+            "no engine found. Run `bin/gai bootstrap` to build it, "
+            "or `bin/gai engine install` for the official fallback."
+        )
     return engine
 
 
@@ -209,7 +223,7 @@ def version_problems(engine: Path, state: dict):
     elif not expected or not actual or actual[: len(expected)] != expected:
         problems.append(
             f"engine {version} does not match upstream {state['tag']}; "
-            "run `bin/gai engine install --force`"
+            "rebuild the source engine, or run `bin/gai engine install --force` for the fallback"
         )
 
     source = source_version()
@@ -347,37 +361,93 @@ def cmd_engine_path(args) -> int:
     return 0
 
 
+def build_jobs() -> int:
+    cpus = os.cpu_count() or 2
+    try:
+        mem_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024 ** 3)
+    except (AttributeError, ValueError, OSError):
+        mem_gb = 4
+    return max(1, min(cpus, int(mem_gb / 1.5)))
+
+
+def build_engine_command():
+    system = platform.system()
+    command = ["scons"]
+    if system == "Linux":
+        command += ["platform=linuxbsd", "target=editor", "dev_build=no", "accesskit=no"]
+        if shutil.which("ld.lld"):
+            command.append("linker=lld")
+    elif system == "Darwin":
+        command += ["platform=macos", "target=editor", "dev_build=no"]
+    elif system == "Windows":
+        command += ["platform=windows", "target=editor", "dev_build=no"]
+    else:
+        die(f"no build recipe for {system}. Read `docs/gai/build.md`.")
+    command.append(f"-j{build_jobs()}")
+    return command
+
+
 def cmd_bootstrap(args) -> int:
     state = load_upstream()
-    engine = find_engine()
-    if engine is None:
-        print("gai: engine not found; installing the official Godot 4.7.2 binary", flush=True)
-        result = cmd_engine_install(argparse.Namespace(force=False))
-        if result != 0:
-            return result
-        engine = find_engine()
+    if args.official:
+        engine = installed_engine()
         if engine is None:
-            die("the install finished but no engine binary was found")
+            print("gai: installing the official fallback engine", flush=True)
+            result = cmd_engine_install(argparse.Namespace(force=False))
+            if result != 0:
+                return result
+            engine = installed_engine()
+            if engine is None:
+                die("the install finished but no engine binary was found")
     else:
-        print(f"gai: engine {engine_version(engine) or 'unknown'}", flush=True)
+        override = os.environ.get("GAI_GODOT")
+        if override:
+            engine = Path(override).expanduser()
+            if not engine.is_file() or not os.access(engine, os.X_OK):
+                die(f"`GAI_GODOT` is not an executable file: {override}")
+        else:
+            engine = built_engine()
+        if engine is None:
+            if shutil.which("scons") is None:
+                die(
+                    "SCons is not installed. Install SCons and the platform build "
+                    "dependencies from `docs/gai/build.md`, then run `bin/gai bootstrap` again."
+                )
+            command = build_engine_command()
+            print("gai: building the engine from source. This can take 20 to 70 minutes.", flush=True)
+            print("gai: " + " ".join(command), flush=True)
+            result = subprocess.run([str(part) for part in command], cwd=str(ROOT))
+            if result.returncode != 0:
+                die(
+                    "the engine build failed. Fix the first error above, then run "
+                    "`bin/gai bootstrap` again. Dependencies: `docs/gai/build.md`."
+                )
+            shutil.rmtree(GAME_DIR / ".godot", ignore_errors=True)
+            engine = built_engine()
+            if engine is None:
+                die("the build finished but no editor binary was found in `bin/`")
+
+    print(f"gai: engine {engine_version(engine) or 'unknown'}", flush=True)
+    os.environ["GAI_GODOT"] = str(engine)
 
     problems = version_problems(engine, state)
     downloaded = BIN_DIR in engine.parents
     if problems and downloaded and any(problem.startswith("engine ") for problem in problems):
-        print("gai: downloaded engine does not match; reinstalling", flush=True)
+        print("gai: fallback engine does not match; reinstalling", flush=True)
         result = cmd_engine_install(argparse.Namespace(force=True))
         if result != 0:
             return result
-        engine = find_engine()
+        engine = installed_engine()
         if engine is None:
             die("the install finished but no engine binary was found")
+        os.environ["GAI_GODOT"] = str(engine)
         problems = version_problems(engine, state)
 
     if problems:
         print("gai: engine or version.py does not match the recorded upstream base")
         for problem in problems:
             print(f"  {problem}")
-        print("Run `bin/gai doctor` to see the engine path. For a downloaded engine, run `bin/gai engine install --force`. For a source build, rebuild it.")
+        print("Run `bin/gai doctor` to see the engine path. Rebuild a source engine, or run `bin/gai engine install --force` for the fallback.")
         return 1
 
     require_game()
@@ -1208,7 +1278,10 @@ def cmd_doctor(args) -> int:
 
     engine = find_engine()
     if engine is None:
-        problems.append("no engine found; run `bin/gai engine install`")
+        problems.append(
+            "no engine found; run `bin/gai bootstrap` to build it, or "
+            "`bin/gai engine install` for the official fallback"
+        )
     else:
         version = engine_version(engine) or "unknown"
         print(f"engine {version}")
@@ -1250,7 +1323,12 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="check the engine, the game, and the upstream base")
     doctor.set_defaults(func=cmd_doctor)
 
-    bootstrap = sub.add_parser("bootstrap", help="install the engine if needed, then check the game")
+    bootstrap = sub.add_parser("bootstrap", help="build the engine if needed, then check the game")
+    bootstrap.add_argument(
+        "--official",
+        action="store_true",
+        help="use the official fallback engine instead of building gai",
+    )
     bootstrap.set_defaults(func=cmd_bootstrap)
 
     check = sub.add_parser("check", help="import assets, parse every script, and run the main scene")
@@ -1285,9 +1363,9 @@ def build_parser() -> argparse.ArgumentParser:
     agent_set.add_argument("value", help="JSON value, or Godot text such as Vector2(10, 20)")
     agent_set.set_defaults(func=cmd_agent_set)
 
-    engine = sub.add_parser("engine", help="manage the engine binary")
+    engine = sub.add_parser("engine", help="manage the official fallback engine")
     engine_sub = engine.add_subparsers(dest="engine_command", required=True)
-    install = engine_sub.add_parser("install", help="download the official engine for this platform")
+    install = engine_sub.add_parser("install", help="download the official fallback engine (no gai features)")
     install.add_argument("--force", action="store_true", help="replace an installed engine")
     install.set_defaults(func=cmd_engine_install)
     engine_path = engine_sub.add_parser("path", help="print the engine path")

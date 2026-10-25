@@ -68,13 +68,14 @@ python3 tests/test_agent.py
 The tests copy `game/` to a temporary directory, start the bridge, read the
 tree, change `visible`, and read it back. They also check the auth and parse
 errors, the state file mode, a second start, concurrent starts, and that stop
-does not kill a foreign pid. They need a source build with the module. CI does
-not run them without an engine build.
+does not kill a foreign pid. They need the gai source build. CI does not
+run them without an engine build.
 
 ## Build
 
-The source build includes the module. The downloaded official engine does not.
-`bin/gai agent start` refuses a downloaded engine with a clear message.
+`bin/gai bootstrap` builds the gai source engine by default, and the source
+build includes the module. The official fallback does not. `bin/gai agent start`
+refuses the fallback with a clear message.
 
 The module depends on the `jsonrpc` module, which is on by default. If you
 disable `jsonrpc`, the gai module does not build.
@@ -84,8 +85,8 @@ disable `jsonrpc`, the gai module does not build.
 - Run control, input injection, screenshots, log tail, and test scenes.
 - Editor mode. The current server runs in the game process.
 - Batch requests, more than one client, and binding the port inside the engine.
-- A prebuilt gai engine for users who do not build. The default `bootstrap`
-  still downloads the official Godot binary.
+- A prebuilt gai engine for users who do not build. Today the first run builds
+  the engine from source.
 
 ## Upstream risk
 

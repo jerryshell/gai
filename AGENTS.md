@@ -9,9 +9,12 @@ Read `docs/gai/architecture.md` before you change anything outside `game/`.
 
 When the user describes a game, do this before you plan:
 
-1. Run `bin/gai bootstrap`. It installs the official engine if it is missing,
-   then checks the game. Tell the user before the about 140 MB download. On
-   Windows, run `python bin/gai bootstrap`.
+1. Run `bin/gai bootstrap`. It builds the gai engine from source if it is
+   missing, then checks the game. The build needs SCons and a C++ toolchain and
+   can take 20 to 70 minutes. Tell the user before it starts. If a build
+   dependency is missing, install it or tell the user what is missing. Do not
+   silently switch to the official fallback. On Windows, run
+   `python bin/gai bootstrap`.
 2. Read `game/project.godot` and `game/scenes/main.tscn`.
 3. Start with the smallest playable slice. If the idea is vague, ask one short
    question about the core loop, then start.
@@ -34,20 +37,20 @@ Run these from the repository root.
 
 | Command | What it does |
 | --- | --- |
-| `bin/gai bootstrap` | Installs the engine if needed, then checks the game. Use this on the first run. |
+| `bin/gai bootstrap` | Builds the gai engine if needed, then checks the game. Use this on the first run. |
 | `bin/gai doctor` | Checks the engine, the game, features, and the upstream base. |
 | `bin/gai check` | Imports assets, parses every `.gd` file, runs the main scene headless, and fails on errors. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
 | `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. |
-| `bin/gai engine install` | Downloads official Godot 4.7.2 into `.gai/bin/`. |
+| `bin/gai engine install` | Downloads the official fallback engine into `.gai/bin/`. It has no gai features. |
 | `bin/gai upstream check` | Fails when an engine change has no active feature owner. |
 | `bin/gai upstream report` | Lists features, changed paths, and unclaimed paths. |
 
 ## Live scene
 
-The agent bridge runs only in a source build with `modules/gai_agent/`. The
-downloaded engine does not include it.
+The agent bridge runs in the gai source build, which `bootstrap` builds by
+default. The official fallback does not include it.
 
 ```sh
 bin/gai agent start

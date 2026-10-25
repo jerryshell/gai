@@ -22,16 +22,22 @@ Describe the game you want. For example:
 
 > Build a 2D platformer about a cat that collects stars. Start with movement and one level.
 
-The agent reads `AGENTS.md`, installs the engine on the first run, and works in
-`game/`. It runs `bin/gai bootstrap` for you. You do not need to run setup
-commands.
+The agent reads `AGENTS.md`, builds the gai engine from source on the first run,
+and works in `game/`. It runs `bin/gai bootstrap` for you. You do not need to run
+setup commands.
 
-The first run downloads the official Godot 4.7.2 binary (about 140 MB) and checks
-its SHA-512. The clone carries the full Godot history, about 1.2 GB in `.git`.
-That history is what makes upstream merges possible.
+The first build needs SCons and a C++ toolchain. It can take 20 to 70 minutes
+depending on the machine, and the agent tells you before it starts. The clone
+carries the full Godot history, about 1.2 GB in `.git`. That history is what
+makes upstream merges possible.
 
-For manual use, run `bin/gai bootstrap`. Then run `bin/gai run` or
-`bin/gai editor`. On Windows, run `python bin/gai` in place of `bin/gai`.
+For manual use, run `bin/gai bootstrap`; it builds the engine if it is missing.
+Then run `bin/gai run` or `bin/gai editor`. On Windows, run `python bin/gai` in
+place of `bin/gai`.
+
+If the machine cannot build, `bin/gai engine install` downloads the official
+Godot 4.7.2 binary as a fallback. That binary has no gai display name and no
+agent bridge. `bin/gai bootstrap --official` uses it.
 
 ## What an agent gets
 
@@ -43,8 +49,8 @@ For manual use, run `bin/gai bootstrap`. Then run `bin/gai run` or
   fails on errors. Godot exits 0 on a script error. This command does not. It
   also fails when the engine does not match the recorded upstream base.
 - `bin/gai agent start/tree/get/set` inspects and edits a running headless game.
-  It needs a source build with `modules/gai_agent/`. The downloaded engine does
-  not include it.
+  The gai source build includes the bridge. `bootstrap` builds it by default;
+  the official fallback does not include it.
 - `game/` holds a small 2D scene that runs. Replace it.
 
 ## Deep fork, not a thin layer
@@ -82,9 +88,10 @@ its conflict, rebuilds the engine, and reruns its tests. See
 
 Version 0.1.0. The display name is gai. Internal identifiers and the binary name
 stay `godot` while the build system depends on them. The editor icon, splash,
-and UI strings are still Godot. The agent bridge works in a source build for
-headless scene inspection and node edits. Run control, input, screenshots,
-editor mode, and the .NET web export are not implemented.
+and UI strings are still Godot. The agent bridge works in the gai source build, which
+`bootstrap` builds by default, for headless scene inspection and node edits. The
+official fallback lacks it. Run control, input, screenshots, editor mode, and
+the .NET web export are not implemented.
 
 Tested on Linux. The macOS and Windows install paths are implemented but not
 tested in this release.

@@ -1,8 +1,9 @@
 # Build the engine
 
-The repository is a Godot source tree. Build it to change engine code or to run a
-binary with the gai display name. For game work, `bin/gai engine install` is
-enough.
+The repository is a Godot source tree. `bin/gai bootstrap` builds the gai engine
+from source by default. Build it directly when you change engine code or want to
+run SCons yourself. The official fallback is for machines that cannot build; it
+has no gai display name and no agent bridge.
 
 ## Requirements
 

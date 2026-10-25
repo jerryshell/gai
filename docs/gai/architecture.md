@@ -16,7 +16,7 @@ Upstream tracking is a maintenance process, not a limit on features.
 ## First run
 
 The user clones the repo, opens pi or opencode, and describes a game. The agent
-runs `bin/gai bootstrap`, which installs the official engine if needed and
+runs `bin/gai bootstrap`, which builds the gai engine from source if needed and
 checks the game. The user does not run setup commands.
 
 ## Features own divergence
