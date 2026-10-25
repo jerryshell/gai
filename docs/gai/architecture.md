@@ -19,6 +19,7 @@ upstream commit we last merged, and the paths that are allowed to differ:
   `NOTICE.md`, and the CI workflow.
 - `edited` lists the upstream files we change: `README.md`, `version.py`, and
   `.gitignore`.
+- `required` lists core layer files that must exist in every commit.
 
 `bin/gai upstream check` diffs the recorded base against `HEAD`. Every path must
 be owned or edited. Anything else fails. CI runs the check on every push.
@@ -60,11 +61,16 @@ Godot 4.7.2 exits 0 when a scene hits a parse or runtime error. The engine print
 `SCRIPT ERROR` and returns success. A CI job that checks only the exit code
 passes a broken game.
 
-`bin/gai check` runs three stages and fails on any error line:
+`bin/gai check` runs three stages and fails on any `ERROR`, `SCRIPT ERROR`, or
+`SHADER ERROR` line:
 
 1. `--import` loads the project and imports assets.
 2. `--check-only --script` parses every `.gd` file under `game/`.
 3. `--quit-after 5` runs the main scene and catches runtime errors.
+
+Before the stages, `check` compares the engine and `version.py` to the recorded
+upstream tag. It refuses to run on a mismatched engine, so a forgotten
+`engine install --force` cannot leave a green check on the old version.
 
 The full output goes to `.gai/logs/check.log`.
 
@@ -86,3 +92,5 @@ engine code to maintain. See `decisions/0002-cli-first.md`.
 - A shallow clone cannot run `upstream check`, because the recorded base commit
   is missing. CI checks out full history for this job.
 - The skill and docs describe 4.7.2. Update them when a merge changes behavior.
+- `upstream merge` follows one release line. After 4.8, an older 4.7 maintenance
+  tag is already in history and the tool will not merge it back.

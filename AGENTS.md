@@ -43,7 +43,7 @@ exit code by itself. `bin/gai check` scans the output and fails for you.
 - A node exists only after `add_child`. Do not call its methods before that.
 - Scenes are text. Keep the `uid://` and `unique_id` values that Godot writes. Do not invent them.
 - `res://` paths only. Never use an absolute filesystem path in the game.
-- Declare input actions in `project.godot` before you call `Input.is_action_pressed`. An undeclared action fails without an error.
+- Declare input actions in `project.godot` before you call `Input.is_action_pressed`. An undeclared action prints an `ERROR:` line, and `bin/gai check` fails on it.
 - Connect signals with `button.pressed.connect(_on_pressed)`. Emit them with `my_signal.emit(value)`.
 - `queue_free()` is deferred. Do not use the node after you call it.
 - Use `preload("res://...")` for a fixed resource and `load()` for a runtime path.

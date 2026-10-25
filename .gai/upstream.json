@@ -14,11 +14,25 @@
     "AGENTS.md",
     "NOTICE.md",
     "bin/gai",
+    "tests/test_check.py",
     "tests/test_upstream.py"
   ],
   "edited": [
     ".gitignore",
     "README.md",
     "version.py"
+  ],
+  "required": [
+    ".agents/skills/godot-game/SKILL.md",
+    ".gai/upstream.json",
+    "AGENTS.md",
+    "bin/gai",
+    "docs/gai/architecture.md",
+    "docs/gai/upstream.md",
+    "game/project.godot",
+    "game/scenes/main.tscn",
+    "game/scripts/main.gd",
+    "tests/test_check.py",
+    "tests/test_upstream.py"
   ]
 }

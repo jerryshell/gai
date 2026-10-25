@@ -27,3 +27,5 @@ jobs:
         run: python3 bin/gai engine install
       - name: Check the starter game
         run: python3 bin/gai check
+      - name: Test the check gate
+        run: python3 tests/test_check.py

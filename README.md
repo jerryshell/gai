@@ -10,6 +10,8 @@ first minute.
 
 ```sh
 git clone git@github.com:jerryshell/gai.git my-game
+# Without an SSH key:
+# git clone https://github.com/jerryshell/gai.git my-game
 cd my-game
 bin/gai engine install
 bin/gai check
@@ -32,7 +34,8 @@ On Windows, run `python bin/gai` in place of `bin/gai`.
 - `.agents/skills/godot-game/` holds scene formats, GDScript patterns, and an
   error catalog. Pi and other Agent Skills tools load it when a task needs it.
 - `bin/gai check` imports assets, parses every script, runs the main scene, and
-  fails on errors. Godot exits 0 on a script error. This command does not.
+  fails on errors. Godot exits 0 on a script error. This command does not. It
+  also fails when the engine does not match the recorded upstream base.
 - `game/` holds a small 2D scene that runs. Replace it.
 
 ## What is here

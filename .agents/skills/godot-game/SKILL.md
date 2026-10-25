@@ -74,7 +74,8 @@ Rules:
 
 `Input.is_action_pressed("jump")` needs an action named `jump` in
 `project.godot`. To add one, use the editor, or copy the shape of an existing
-action. An action that is not declared does not raise an error.
+action. An action that is not declared prints
+`ERROR: The InputMap action "jump" doesn't exist.` and `bin/gai check` fails.
 
 For a one-off event, use `_unhandled_input(event: InputEvent)` and
 `event.is_action_pressed("jump")`.

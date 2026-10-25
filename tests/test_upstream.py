@@ -95,6 +95,7 @@ class UpstreamTest(unittest.TestCase):
             "owned_prefixes": [".gai/", "game/"],
             "owned_files": ["bin/gai"],
             "edited": [".gitignore", "README.md", "version.py"],
+            "required": ["bin/gai", "game/project.godot"],
         }
         self.repo.write(".gai/upstream.json", json.dumps(state, indent=2) + "\n")
         self.repo.git("add", ".gai/upstream.json")
@@ -202,6 +203,21 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn('name = "gai"', text)
         self.assertIn("minor = 8", text)
         self.assert_layer_ok()
+
+    def test_deleting_a_required_file_fails(self):
+        self.repo.git("rm", "game/project.godot")
+        self.repo.git("commit", "-q", "-m", "delete required")
+        result = self.repo.gai("upstream", "check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("game/project.godot", result.stdout)
+        self.assertIn("required files are missing", result.stdout)
+
+    def test_merge_refuses_a_dirty_tree(self):
+        self.make_upstream({"core/os/os.cpp": "// upstream change\n"})
+        self.repo.write("README.md", "# local edit\n")
+        result = self.repo.gai("upstream", "merge", "4.8.0-stable")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("uncommitted", (result.stdout + result.stderr).lower())
 
     def test_edit_outside_the_layer_fails(self):
         self.repo.write("core/os/os.cpp", "// local change\n")

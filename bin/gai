@@ -39,7 +39,7 @@ RELEASES = {
     ("windows", "amd64"): ("win64.exe.zip", "Godot_v{tag}_win64.exe", "godot.exe", False),
 }
 
-ERROR_LINE = re.compile(r"^(?:ERROR|SCRIPT ERROR):")
+ERROR_LINE = re.compile(r"^(?:ERROR|SCRIPT ERROR|SHADER ERROR):")
 
 
 def die(message: str, code: int = 1) -> None:
@@ -156,6 +156,51 @@ def engine_version(engine: Path):
 def require_game() -> None:
     if not (GAME_DIR / "project.godot").is_file():
         die("`game/project.godot` is missing. Restore the starter game from git.")
+
+
+def numeric_version(text: str):
+    match = re.match(r"(\d+(?:\.\d+)*)", text)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def source_version():
+    try:
+        text = (ROOT / "version.py").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    values = {}
+    for key in ("major", "minor", "patch"):
+        match = re.search(rf"^{key} = (\d+)$", text, re.MULTILINE)
+        if not match:
+            return None
+        values[key] = int(match.group(1))
+    return (values["major"], values["minor"], values["patch"])
+
+
+def version_problems(engine: Path, state: dict):
+    problems = []
+    version = engine_version(engine)
+    expected = numeric_version(state["tag"])
+    actual = numeric_version(version or "")
+    if not version:
+        problems.append("the engine did not report a version")
+    elif not expected or not actual or actual[: len(expected)] != expected:
+        problems.append(
+            f"engine {version} does not match upstream {state['tag']}; "
+            "run `bin/gai engine install --force`"
+        )
+
+    source = source_version()
+    if source is None:
+        problems.append("cannot read major, minor, and patch from `version.py`")
+    elif not expected or source[: len(expected)] != expected:
+        problems.append(
+            f"`version.py` is {'.'.join(map(str, source))} and upstream is {state['tag']}; "
+            "fix `version.py`"
+        )
+    return problems
 
 
 def release_for_host():
@@ -294,6 +339,13 @@ def collect_errors(text: str):
 def cmd_check(args) -> int:
     engine = require_engine()
     require_game()
+    state = load_upstream()
+    problems = version_problems(engine, state)
+    if problems:
+        print("check: wrong engine or source version")
+        for problem in problems:
+            print(f"  {problem}")
+        return 1
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / "check.log"
 
@@ -445,6 +497,22 @@ def check_base(state: dict) -> None:
         die(f"upstream base {commit[:8]} is not an ancestor of HEAD")
 
 
+def missing_required(state: dict, staged: bool = False):
+    missing = []
+    for path in state.get("required", []):
+        ref = f":{path}" if staged else f"HEAD:{path}"
+        if git("cat-file", "-e", ref, check=False).returncode != 0:
+            missing.append(path)
+    return missing
+
+
+def print_missing(missing) -> None:
+    print("layer: required files are missing")
+    for path in missing:
+        print(f"  {path}")
+    print("Restore the file, or remove it from `required` in `.gai/upstream.json`.")
+
+
 def print_violations(violations) -> None:
     print("layer: outside the gai layer")
     for status, path in violations:
@@ -473,6 +541,10 @@ def cmd_upstream_check(args) -> int:
     violations = layer_violations(state["commit"])
     if violations:
         print_violations(violations)
+        return 1
+    missing = missing_required(state)
+    if missing:
+        print_missing(missing)
         return 1
     changed = git("diff", "--name-only", state["commit"], "HEAD").stdout.splitlines()
     print(f"base {state['tag']} {state['commit'][:8]}")
@@ -558,6 +630,10 @@ def finalize_merge(commit: str) -> int:
     if violations:
         print_violations(violations)
         return 1
+    missing = missing_required(state, staged=True)
+    if missing:
+        print_missing(missing)
+        return 1
 
     state["commit"] = commit
     state["tag"] = tag_for_commit(commit)
@@ -567,12 +643,17 @@ def finalize_merge(commit: str) -> int:
     git("commit", "-m", f"Merge upstream {state['tag']}")
     print(f"merged {state['tag']} ({commit[:8]})")
     print(f"base {state['tag']} {commit[:8]}")
+    print("next: update docs that name the old version")
+    print("then: bin/gai engine install --force && bin/gai check")
     return 0
 
 
 def cmd_upstream_merge(args) -> int:
     if merge_in_progress():
         die("a merge is in progress. Resolve it, then run `bin/gai upstream continue`.")
+    dirty = git("status", "--porcelain", "--untracked-files=no").stdout.strip()
+    if dirty:
+        die("the working tree has uncommitted changes to tracked files. Commit or stash them first.")
     state = load_upstream()
     check_base(state)
     ensure_upstream_remote()
@@ -644,6 +725,9 @@ def cmd_doctor(args) -> int:
         violations = layer_violations(state["commit"])
         if violations:
             problems.append(f"{len(violations)} paths outside the gai layer")
+        missing = missing_required(state)
+        if missing:
+            problems.append(f"{len(missing)} required files are missing")
 
     project = GAME_DIR / "project.godot"
     if project.is_file():
@@ -659,9 +743,7 @@ def cmd_doctor(args) -> int:
         version = engine_version(engine) or "unknown"
         print(f"engine {version}")
         print(f"engine path {engine}")
-        expected = re.match(r"(\d+\.\d+\.\d+)", state["tag"])
-        if expected and not version.startswith(expected.group(1) + "."):
-            problems.append(f"engine {version} does not match upstream {state['tag']}")
+        problems.extend(version_problems(engine, state))
 
     if problems:
         print(f"status: {len(problems)} problems")

@@ -4,7 +4,7 @@ Use this when Godot publishes a new tag, for example `4.8-stable`.
 
 ## Before you start
 
-- You are on `main` with a clean working tree.
+- You are on `main` with no uncommitted changes to tracked files.
 - `bin/gai check` passes.
 - You can reach github.com.
 
@@ -54,8 +54,20 @@ bin/gai check
 python3 tests/test_upstream.py
 ```
 
-Run the test suite. Commit any doc updates. If Godot changes the release asset
-names, update `RELEASES` in `bin/gai`.
+Run the test suite. If Godot changes the release asset names, update `RELEASES`
+in `bin/gai`.
+
+Update the version strings that describe the project:
+
+```sh
+grep -rn '4\.7' README.md AGENTS.md docs/gai .agents game/project.godot
+```
+
+Replace the engine version, the `config/features` value, and the doc headings.
+The editor rewrites `game/project.godot` when it saves the project. Commit that
+change.
+
+Commit any doc updates.
 
 If you build the engine from source, rebuild it. `bin/gai` prefers a source build
 under `bin/godot.*.editor.*` over the downloaded binary.
