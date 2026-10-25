@@ -35,3 +35,17 @@ jobs:
         run: python3 bin/gai check
       - name: Test the check gate
         run: python3 tests/test_check.py
+
+  engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev libfontconfig1-dev libdbus-1-dev libwayland-dev libenet-dev lld scons
+      - name: Build the engine
+        run: scons platform=linuxbsd target=editor dev_build=no accesskit=no linker=lld -j4
+      - name: Test the agent bridge
+        run: python3 tests/test_agent.py

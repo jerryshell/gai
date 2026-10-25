@@ -68,13 +68,24 @@ bin/gai agent call object.call '{"handle":"<handle>","method":"get_class","args"
 bin/gai agent stop
 ```
 
-The bridge exposes the engine's reflection. Every class, property, method,
-signal, and singleton is reachable through `classdb.*`, `object.*`, and
-`api.singletons`. A handle is the decimal string returned by `scene.tree`,
+The bridge exposes the engine's reflection. Every native class, property,
+method, signal, and singleton is reachable through `classdb.*`, `object.*`, and
+`api.singletons`. GDScript `class_name` classes are reached through node or
+object handles. A handle is the decimal string returned by `scene.tree`,
 `object.singleton`, `classdb.instantiate`, or `resource.load`. Use
-`agent call` for any method; the named commands are sugar. `agent start
---editor` starts the editor, where `EditorInterface` is a singleton. Add
-`--display` for screenshots.
+`agent call` for any method; the named commands are sugar.
+
+A string stays a string when the target is a string; for non-string targets use
+Godot text such as `Vector2(10, 20)`, or `{"$var": "..."}` inside a generic
+dictionary. Pass an object as `{"$handle": "<id>"}`. An unknown handle is an
+error. `object.free` only frees handles the bridge created; use `node.delete` for
+tree nodes.
+
+`agent start --editor` starts the editor, where `EditorInterface` is a
+singleton. In editor mode `run.*`, `scene.change`, and `input.*` need
+`force: true`; `scene.tree` returns the edited scene when one is open. Add
+`--display` for screenshots. The token holder has full local access, including
+`OS.execute`.
 
 ## The loop
 

@@ -104,6 +104,21 @@ void GaiAgentServer::stop() {
 		server->stop();
 		server = Ref<TCPServer>();
 	}
+	for (ObjectID id : created) {
+		Object *object = ObjectDB::get_instance(id);
+		if (object == nullptr) {
+			continue;
+		}
+		if (Node *node = Object::cast_to<Node>(object)) {
+			if (!node->is_inside_tree()) {
+				memdelete(node);
+			}
+		} else {
+			memdelete(object);
+		}
+	}
+	created.clear();
+	refs.clear();
 	_drop_client();
 }
 
@@ -221,7 +236,6 @@ void GaiAgentServer::_handle(const String &p_line) {
 
 	const String response = rpc.process_string(p_line);
 	if (response.is_empty()) {
-		_drop_client();
 		return;
 	}
 
@@ -232,8 +246,8 @@ void GaiAgentServer::_handle(const String &p_line) {
 			const Dictionary response_dict = response_data;
 			if (response_dict.has("result") && response_dict["result"].get_type() == Variant::DICTIONARY) {
 				const Dictionary result = response_dict["result"];
-				if (result.has("error")) {
-					_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_PARAMS, String(result["error"]), id)) + "\n");
+				if (result.has("$gai_error")) {
+					_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_PARAMS, String(result["$gai_error"]), id)) + "\n");
 					return;
 				}
 			}
@@ -259,7 +273,8 @@ Node *GaiAgentServer::_node_for(const String &p_path) {
 		return nullptr;
 	}
 	if (p_path.is_empty()) {
-		return tree->get_current_scene();
+		Node *edited = _editor_scene_root();
+		return edited != nullptr ? edited : tree->get_current_scene();
 	}
 	Node *root = tree->get_root();
 	if (root == nullptr) {
@@ -268,7 +283,10 @@ Node *GaiAgentServer::_node_for(const String &p_path) {
 	return root->get_node_or_null(NodePath(p_path));
 }
 
-Variant GaiAgentServer::_json_value(const Variant &p_value) {
+Variant GaiAgentServer::_json_value(const Variant &p_value, int p_depth) {
+	if (p_depth > 64) {
+		return String("<max depth>");
+	}
 	if (p_value.get_type() == Variant::OBJECT) {
 		Object *object = p_value;
 		if (object != nullptr) {
@@ -282,11 +300,25 @@ Variant GaiAgentServer::_json_value(const Variant &p_value) {
 		case Variant::INT:
 		case Variant::FLOAT:
 		case Variant::STRING:
-		case Variant::ARRAY:
-		case Variant::DICTIONARY:
 			return p_value;
+		case Variant::ARRAY: {
+			const Array array = p_value;
+			Array out;
+			for (const Variant &value : array) {
+				out.push_back(_json_value(value, p_depth + 1));
+			}
+			return out;
+		}
+		case Variant::DICTIONARY: {
+			const Dictionary dictionary = p_value;
+			Dictionary out;
+			for (const KeyValue<Variant, Variant> &entry : dictionary) {
+				out[entry.key] = _json_value(entry.value, p_depth + 1);
+			}
+			return out;
+		}
 		default:
-			return p_value.stringify();
+			return VariantUtilityFunctions::var_to_str(p_value);
 	}
 }
 
@@ -336,7 +368,10 @@ Variant GaiAgentServer::_rpc_scene_tree(const Variant &p_params) {
 	if (tree == nullptr) {
 		return Dictionary();
 	}
-	Node *root = tree->get_current_scene();
+	Node *root = _editor_scene_root();
+	if (root == nullptr) {
+		root = tree->get_current_scene();
+	}
 	if (root == nullptr) {
 		root = tree->get_root();
 	}
@@ -349,17 +384,14 @@ Variant GaiAgentServer::_rpc_scene_tree(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_node_get(const Variant &p_params) {
-	Dictionary error;
 	if (p_params.get_type() != Variant::DICTIONARY) {
-		error["error"] = "params must be an object";
-		return error;
+		return _error("params must be an object");
 	}
 	const Dictionary params = p_params;
 	const String path = params.get("path", "");
 	Node *node = _node_for(path);
 	if (node == nullptr) {
-		error["error"] = "node not found: " + path;
-		return error;
+		return _error("node not found: " + path);
 	}
 	Array properties;
 	if (params.has("properties") && params["properties"].get_type() == Variant::ARRAY) {
@@ -369,60 +401,29 @@ Variant GaiAgentServer::_rpc_node_get(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_node_set(const Variant &p_params) {
-	Dictionary error;
 	if (p_params.get_type() != Variant::DICTIONARY) {
-		error["error"] = "params must be an object";
-		return error;
+		return _error("params must be an object");
 	}
 	const Dictionary params = p_params;
 	const String path = params.get("path", "");
 	const String property = params.get("property", "");
 	if (property.is_empty() || !params.has("value")) {
-		error["error"] = "property and value are required";
-		return error;
+		return _error("property and value are required");
 	}
 	Node *node = _node_for(path);
 	if (node == nullptr) {
-		error["error"] = "node not found: " + path;
-		return error;
+		return _error("node not found: " + path);
 	}
-
-	Variant value = params["value"];
-	if (value.get_type() == Variant::STRING) {
-		const Variant parsed = VariantUtilityFunctions::str_to_var(value);
-		if (parsed.get_type() != Variant::NIL) {
-			value = parsed;
+	const Variant result = _set_property(node, property, params["value"]);
+	if (result.get_type() == Variant::DICTIONARY) {
+		const Dictionary dictionary = result;
+		if (dictionary.has("$gai_error")) {
+			return result;
 		}
 	}
-
-	List<PropertyInfo> property_list;
-	node->get_property_list(&property_list);
-	const PropertyInfo *property_info = nullptr;
-	for (const PropertyInfo &info : property_list) {
-		if (info.name == property) {
-			property_info = &info;
-			break;
-		}
-	}
-	if (property_info == nullptr) {
-		error["error"] = "unknown property: " + property;
-		return error;
-	}
-	if (property_info->type != Variant::NIL && value.get_type() != property_info->type) {
-		if (!Variant::can_convert_strict(value.get_type(), property_info->type)) {
-			error["error"] = "invalid value for " + property;
-			return error;
-		}
-		if (property_info->type == Variant::BOOL) {
-			error["error"] = "invalid value for " + property;
-			return error;
-		}
-	}
-	node->set(property, value);
-
-	Dictionary result;
-	result["path"] = String(node->get_path());
-	result["property"] = property;
-	result["value"] = _json_value(node->get(property));
-	return result;
+	Dictionary out;
+	out["path"] = String(node->get_path());
+	out["property"] = property;
+	out["value"] = result;
+	return out;
 }

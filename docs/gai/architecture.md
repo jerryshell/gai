@@ -95,5 +95,9 @@ does not match the base tag. This is the game gate.
 - A shallow clone cannot run `upstream check`.
 - The .NET web export is planned, not implemented. It needs a custom engine
   build.
-- The agent bridge exposes runtime and editor reflection. Event streams,
-  export helpers, and multiple clients are planned. Screenshots need a display.
+- The agent bridge exposes native runtime and editor reflection. GDScript
+  `class_name` classes are reached through handles. Event streams, signal
+  connections, export helpers, and multiple clients are planned. Screenshots
+  need a display.
+- The bridge token grants full local access, including `OS.execute`. It is not a
+  sandbox.

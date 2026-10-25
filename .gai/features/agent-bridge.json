@@ -11,5 +11,5 @@
   "tests": [
     "tests/test_agent.py"
   ],
-  "notes": "Runtime and editor JSON-RPC bridge. Exposes ClassDB/Object reflection, singletons, object handles, scene/node/resource/project/run/input/screenshot methods, and a generic CLI call."
+  "notes": "Runtime and editor JSON-RPC bridge. Exposes ClassDB/Object reflection, singletons, object handles, scene/node/resource/project/run/input/screenshot methods, generic agent call, and editor guards."
 }

@@ -71,15 +71,20 @@ class GaiAgentServer : public Object {
 
 	Object *_resolve_handle(const Variant &p_value);
 	String _handle(Object *p_object);
-	Variant _to_variant(const Variant &p_value);
+	Variant _to_variant(const Variant &p_value, Variant::Type p_type, String &r_error);
 	Dictionary _object_info(Object *p_object);
 	Dictionary _error(const String &p_message);
 	Dictionary _property_dict(const PropertyInfo &p_info);
 	Dictionary _method_dict(const MethodInfo &p_info);
 	bool _property_for(Object *p_object, const String &p_name, PropertyInfo &r_info);
+	Variant _set_property(Object *p_object, const String &p_name, const Variant &p_value);
+
+	bool _editor_mode() const;
+	Node *_editor_scene_root();
+	String _editor_refusal(const Dictionary &p_params, const String &p_what);
 
 	Dictionary _node_info(Node *p_node, const Array &p_properties);
-	Variant _json_value(const Variant &p_value);
+	Variant _json_value(const Variant &p_value, int p_depth = 0);
 	Node *_node_for(const String &p_path);
 	void _handle(const String &p_line);
 	void _send(const String &p_payload);

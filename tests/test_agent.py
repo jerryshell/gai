@@ -142,7 +142,7 @@ class AgentTest(unittest.TestCase):
 
         wrong_type = self.run_gai("agent", "set", "/root/Main", "visible", "notabool")
         self.assertEqual(wrong_type.returncode, 1)
-        self.assertIn("invalid value", wrong_type.stderr)
+        self.assertIn("cannot parse value as bool", wrong_type.stderr)
 
         stop = self.run_gai("agent", "stop")
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
@@ -162,6 +162,13 @@ class AgentTest(unittest.TestCase):
         self.assertIn("EditorInterface", [item["name"] for item in singletons["singletons"]])
         interface = call("object.singleton", {"name": "EditorInterface"})
         self.assertEqual(interface["class"], "EditorInterface")
+
+        quit_attempt = self.run_gai("agent", "call", "run.quit", "{}")
+        self.assertEqual(quit_attempt.returncode, 1)
+        self.assertIn("editor mode", quit_attempt.stderr)
+        input_attempt = self.run_gai("agent", "call", "input.action", '{"name":"ui_accept"}')
+        self.assertEqual(input_attempt.returncode, 1)
+        self.assertIn("editor mode", input_attempt.stderr)
 
         stop = self.run_gai("agent", "stop")
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
@@ -197,6 +204,28 @@ class AgentTest(unittest.TestCase):
         self.assertFalse(call("object.get", {"handle": handle, "property": "visible"}))
         self.assertEqual(call("object.call", {"handle": handle, "method": "get_class", "args": []}), "Node2D")
 
+        title = next(child for child in tree["root"]["children"] if child["name"] == "Title")
+        self.assertEqual(
+            call("object.set", {"handle": title["handle"], "property": "text", "value": "Color(1, 0, 0, 1)"}),
+            "Color(1, 0, 0, 1)",
+        )
+        self.assertEqual(
+            call("object.get", {"handle": title["handle"], "property": "text"}),
+            "Color(1, 0, 0, 1)",
+        )
+
+        position = call("object.get", {"handle": handle, "property": "position"})
+        self.assertTrue(position.startswith("Vector2("))
+        call("object.set", {"handle": handle, "property": "position", "value": position})
+        self.assertEqual(call("object.get", {"handle": handle, "property": "position"}), position)
+
+        bad_handle = self.run_gai(
+            "agent", "call", "object.set",
+            json.dumps({"handle": handle, "property": "script", "value": {"$handle": "0"}}),
+        )
+        self.assertEqual(bad_handle.returncode, 1)
+        self.assertIn("unknown handle", bad_handle.stderr)
+
         engine = call("object.singleton", {"name": "Engine"})
         version = call("object.call", {"handle": engine["handle"], "method": "get_version_info", "args": []})
         self.assertEqual(version["major"], 4)
@@ -206,6 +235,37 @@ class AgentTest(unittest.TestCase):
         tree = json.loads(self.run_gai("agent", "tree").stdout)
         self.assertTrue(any(child["name"] == "Probe" for child in tree["root"]["children"]))
         call("node.delete", {"path": "/root/Main/Probe"})
+
+        renderer = call("object.singleton", {"name": "RenderingServer"})
+        refused = self.run_gai("agent", "call", "object.free", json.dumps({"handle": renderer["handle"]}))
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("refusing", refused.stderr)
+        refused_call = self.run_gai(
+            "agent", "call", "object.call",
+            json.dumps({"handle": renderer["handle"], "method": "free", "args": []}),
+        )
+        self.assertEqual(refused_call.returncode, 1)
+        self.assertFalse(call("run.status")["paused"])
+
+        rpc = call("classdb.instantiate", {"name": "JSONRPC"})
+        response = call(
+            "object.call",
+            {"handle": rpc["handle"], "method": "make_response_error", "args": [1, "boom"]},
+        )
+        self.assertEqual(response["error"]["code"], 1)
+        self.assertNotIn("$gai_error", response)
+        call("object.free", {"handle": rpc["handle"]})
+
+        left = call("node.create", {"parent": "/root/Main", "type": "Node2D", "name": "Left"})
+        right = call("node.create", {"parent": "/root/Main", "type": "Node2D", "name": "Right"})
+        call("node.reparent", {"path": left["path"], "parent": right["path"]})
+        tree = json.loads(self.run_gai("agent", "tree").stdout)
+        right_node = next(child for child in tree["root"]["children"] if child["name"] == "Right")
+        self.assertTrue(any(child["name"] == "Left" for child in right_node["children"]))
+        call("node.delete", {"path": right["path"]})
+
+        missing = self.run_gai("agent", "call", "resource.load", '{"path":"res://missing.tres"}')
+        self.assertEqual(missing.returncode, 1)
 
         gradient = call("classdb.instantiate", {"name": "Gradient"})
         self.assertEqual(gradient["class"], "Gradient")
@@ -231,6 +291,8 @@ class AgentTest(unittest.TestCase):
         call("input.action", {"name": "ui_accept", "pressed": False})
         call("input.key", {"keycode": 32, "pressed": True})
         call("input.key", {"keycode": 32, "pressed": False})
+        call("input.mouse", {"x": 10, "y": 20, "button": 1, "pressed": True})
+        call("input.mouse", {"x": 10, "y": 20, "button": 1, "pressed": False})
 
         shot = self.run_gai("agent", "call", "render.screenshot", '{"path":"user://shot.png"}')
         self.assertEqual(shot.returncode, 1)

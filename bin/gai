@@ -623,8 +623,6 @@ def agent_result(method: str, params=None):
         result = agent_call(state, method, params)
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"agent: {exc}")
-    if isinstance(result, dict) and "error" in result:
-        die(f"agent: {result['error']}")
     return result
 
 
@@ -751,6 +749,8 @@ def _cmd_agent_start(args) -> int:
     env = os.environ.copy()
     env["GAI_AGENT_PORT"] = str(port)
     env["GAI_AGENT_TOKEN"] = token
+    if args.editor:
+        env["GAI_AGENT_EDITOR"] = "1"
     AGENT_LOG.write_text("", encoding="utf-8")
     with AGENT_LOG.open("wb") as log:
         command = [str(engine)]

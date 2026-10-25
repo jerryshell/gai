@@ -26,10 +26,18 @@ everything else.
 - `scene.tree`, `object.singleton`, `classdb.instantiate`, and `resource.load`
   return handles.
 - Pass a handle as a string in `handle`. Pass an object argument as
-  `{"$handle": "<id>"}`. Other engine values use Godot text, such as
-  `"Vector2(10, 20)"`.
+  `{"$handle": "<id>"}`. An unknown handle is an error, not null.
+- A string stays a string when the target property or argument is a string.
+  For a non-string target the bridge parses Godot text, such as
+  `"Vector2(10, 20)"`. Use `{"$var": "..."}` inside a generic dictionary or a
+  project setting.
+- Reads return non-JSON values as `var_to_str` text, such as `Vector2(0, 0)`,
+  so they can be sent back. Containers convert recursively; depth is capped at
+  64.
 - Loaded resources and RefCounted objects stay alive in the bridge until
-  `object.free` or shutdown. Tree nodes live in the scene tree.
+  `object.free` or shutdown. `object.free` refuses engine singletons and game
+  objects; it frees only handles the bridge created. Use `node.delete` for a
+  tree node.
 
 ## Reflection
 
@@ -42,8 +50,11 @@ everything else.
 `object.singleton` reaches `Engine`, `OS`, `ProjectSettings`, `Input`,
 `PhysicsServer2D`, `PhysicsServer3D`, `RenderingServer`, `AudioServer`,
 `NavigationServer2D`, `NavigationServer3D`, `EditorInterface`, and every other
-registered singleton. This is the completeness path: if `ClassDB` knows it,
-the agent can discover and call it.
+registered singleton. `api.singletons` returns a handle for each.
+
+This is the completeness path for native classes: if `ClassDB` knows it, the
+agent can discover and call it. GDScript `class_name` classes are not in
+`ClassDB`; reach them through node or object handles.
 
 ## Subsystems
 
@@ -53,9 +64,17 @@ the agent can discover and call it.
 | `node` | `get`, `set`, `create`, `delete`, `reparent`, `add_child` | Path based. |
 | `resource` | `load`, `save` | Engine resources, not shell file access. |
 | `project` | `get`, `set`, `save` | Project settings. |
-| `run` | `status`, `pause`, `resume`, `step`, `time_scale`, `quit` | `step` restores the previous pause state. |
-| `input` | `action`, `key`, `mouse` | Injects input events. |
+| `run` | `status`, `pause`, `resume`, `step`, `time_scale`, `quit` | `step` restores the previous pause state. Guarded in editor mode. |
+| `input` | `action`, `key`, `mouse` | Injects input events. Guarded in editor mode. |
 | `render` | `screenshot` | Needs a display; headless returns an error. |
+
+Errors are JSON-RPC errors. A normal result dictionary that contains an `error`
+key is preserved and returned as data.
+
+In editor mode, `scene.tree` returns the edited scene when one is open. Its paths
+are editor-internal. Prefer handles from `EditorInterface.get_edited_scene_root`.
+`run.*`, `scene.change`, and `input.*` are refused without `force: true` so an
+agent cannot quit or pause the editor by accident.
 
 ## CLI
 
@@ -82,8 +101,9 @@ and `set` remain path-based sugar.
 - One client at a time. A request must finish within 10 seconds. An idle client
   is replaced; an extra connection during a request is dropped.
 - `agent stop` checks the process start time and engine path before signalling.
-- Full access is intentional. The engine source is fully editable, so the agent
-  can add bridge methods when a capability needs one.
+- Full access is intentional. The token holder can call `OS.execute`, write
+  arbitrary paths through `resource.save` or `render.screenshot`, and change the
+  engine source. gai is a trusted local agent interface, not a sandbox.
 
 ## Tests
 
@@ -92,12 +112,14 @@ python3 tests/test_agent.py
 ```
 
 Five tests: scene get/set and auth, capability surface, editor mode, concurrent
-start, and foreign PID safety. They need a source build. CI does not build the
-engine yet, so it skips them.
+start, and foreign PID safety. They need a source build. The `engine` CI job
+builds the engine and runs them. A local run needs a binary built from the
+current HEAD.
 
 ## Not yet
 
-- Event subscriptions and streaming. The agent polls.
+- Event subscriptions and streaming. The agent polls. Signals can be listed
+  and emitted, but not connected or awaited.
 - Multiple clients and batch requests.
 - Export helpers. Export internals are reachable through editor objects when
   they are exposed as singletons or objects.

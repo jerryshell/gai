@@ -10,6 +10,7 @@
 #include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
 #include "core/os/keyboard.h"
+#include "core/os/os.h"
 #include "core/templates/local_vector.h"
 #include "core/variant/callable.h"
 #include "core/variant/variant_utility.h"
@@ -17,6 +18,10 @@
 #include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
 #include "scene/main/window.h"
+
+#ifdef TOOLS_ENABLED
+#include "editor/editor_interface.h"
+#endif
 
 String GaiAgentServer::_handle(Object *p_object) {
 	return String::num_uint64((uint64_t)p_object->get_instance_id());
@@ -32,7 +37,7 @@ Object *GaiAgentServer::_resolve_handle(const Variant &p_value) {
 
 Dictionary GaiAgentServer::_error(const String &p_message) {
 	Dictionary error;
-	error["error"] = p_message;
+	error["$gai_error"] = p_message;
 	return error;
 }
 
@@ -94,16 +99,36 @@ bool GaiAgentServer::_property_for(Object *p_object, const String &p_name, Prope
 	return false;
 }
 
-Variant GaiAgentServer::_to_variant(const Variant &p_value) {
+Variant GaiAgentServer::_to_variant(const Variant &p_value, Variant::Type p_type, String &r_error) {
 	if (p_value.get_type() == Variant::DICTIONARY) {
 		const Dictionary dict = p_value;
 		if (dict.has("$handle")) {
 			Object *object = _resolve_handle(dict["$handle"]);
-			return object != nullptr ? Variant(object) : Variant();
+			if (object == nullptr) {
+				r_error = "unknown handle";
+				return Variant();
+			}
+			return Variant(object);
+		}
+		if (dict.has("$var")) {
+			const Variant text = dict["$var"];
+			if (text.get_type() != Variant::STRING) {
+				r_error = "$var must be a string";
+				return Variant();
+			}
+			const Variant parsed = VariantUtilityFunctions::str_to_var(text);
+			if (parsed.get_type() == Variant::NIL && !String(text).is_empty()) {
+				r_error = "cannot parse $var";
+				return Variant();
+			}
+			return parsed;
 		}
 		Dictionary out;
 		for (const KeyValue<Variant, Variant> &entry : dict) {
-			out[entry.key] = _to_variant(entry.value);
+			out[entry.key] = _to_variant(entry.value, Variant::NIL, r_error);
+			if (!r_error.is_empty()) {
+				return Variant();
+			}
 		}
 		return out;
 	}
@@ -111,17 +136,71 @@ Variant GaiAgentServer::_to_variant(const Variant &p_value) {
 		const Array array = p_value;
 		Array out;
 		for (const Variant &value : array) {
-			out.push_back(_to_variant(value));
+			out.push_back(_to_variant(value, Variant::NIL, r_error));
+			if (!r_error.is_empty()) {
+				return Variant();
+			}
 		}
 		return out;
 	}
-	if (p_value.get_type() == Variant::STRING) {
+	if (p_value.get_type() == Variant::STRING && p_type != Variant::NIL && p_type != Variant::STRING) {
 		const Variant parsed = VariantUtilityFunctions::str_to_var(p_value);
-		if (parsed.get_type() != Variant::NIL) {
-			return parsed;
+		if (parsed.get_type() == Variant::NIL && !String(p_value).is_empty()) {
+			r_error = "cannot parse value as " + Variant::get_type_name(p_type);
+			return Variant();
 		}
+		return parsed;
 	}
 	return p_value;
+}
+
+Variant GaiAgentServer::_set_property(Object *p_object, const String &p_name, const Variant &p_value) {
+	PropertyInfo info;
+	if (!_property_for(p_object, p_name, info)) {
+		return _error("unknown property: " + p_name);
+	}
+	String error;
+	const Variant value = _to_variant(p_value, info.type, error);
+	if (!error.is_empty()) {
+		return _error(error);
+	}
+	if (info.type != Variant::NIL && value.get_type() != info.type) {
+		if (!Variant::can_convert_strict(value.get_type(), info.type)) {
+			return _error("invalid value for " + p_name);
+		}
+		if (info.type == Variant::BOOL) {
+			return _error("invalid value for " + p_name);
+		}
+	}
+	p_object->set(p_name, value);
+	return _json_value(p_object->get(p_name));
+}
+
+bool GaiAgentServer::_editor_mode() const {
+#ifdef TOOLS_ENABLED
+	return OS::get_singleton()->get_environment("GAI_AGENT_EDITOR") == "1" || Engine::get_singleton()->is_editor_hint();
+#else
+	return false;
+#endif
+}
+
+Node *GaiAgentServer::_editor_scene_root() {
+#ifdef TOOLS_ENABLED
+	if (_editor_mode()) {
+		EditorInterface *editor = EditorInterface::get_singleton();
+		if (editor != nullptr) {
+			return editor->get_edited_scene_root();
+		}
+	}
+#endif
+	return nullptr;
+}
+
+String GaiAgentServer::_editor_refusal(const Dictionary &p_params, const String &p_what) {
+	if (_editor_mode() && !(bool)p_params.get("force", false)) {
+		return p_what + " is disabled in editor mode; pass force=true to override";
+	}
+	return "";
 }
 
 Variant GaiAgentServer::_rpc_api_methods(const Variant &p_params) {
@@ -185,6 +264,9 @@ Variant GaiAgentServer::_rpc_api_singletons(const Variant &p_params) {
 		Dictionary item;
 		item["name"] = String(singleton.name);
 		item["class"] = String(singleton.class_name);
+		if (singleton.ptr != nullptr) {
+			item["handle"] = _handle(singleton.ptr);
+		}
 		out.push_back(item);
 	}
 	Dictionary result;
@@ -327,25 +409,10 @@ Variant GaiAgentServer::_rpc_object_set(const Variant &p_params) {
 	if (object == nullptr) {
 		return _error("unknown handle");
 	}
-	const String property = params.get("property", "");
-	PropertyInfo info;
-	if (!_property_for(object, property, info)) {
-		return _error("unknown property: " + property);
-	}
 	if (!params.has("value")) {
 		return _error("value is required");
 	}
-	Variant value = _to_variant(params["value"]);
-	if (info.type != Variant::NIL && value.get_type() != info.type) {
-		if (!Variant::can_convert_strict(value.get_type(), info.type)) {
-			return _error("invalid value for " + property);
-		}
-		if (info.type == Variant::BOOL) {
-			return _error("invalid value for " + property);
-		}
-	}
-	object->set(property, value);
-	return _json_value(object->get(property));
+	return _set_property(object, params.get("property", ""), params["value"]);
 }
 
 Variant GaiAgentServer::_rpc_object_call(const Variant &p_params) {
@@ -361,6 +428,10 @@ Variant GaiAgentServer::_rpc_object_call(const Variant &p_params) {
 	if (method.is_empty()) {
 		return _error("method is required");
 	}
+	const ObjectID id = object->get_instance_id();
+	if ((method == "free" || method == "queue_free") && !created.has(id) && !refs.has(id)) {
+		return _error("refusing to free an object the bridge did not create");
+	}
 	Array args;
 	if (params.has("args")) {
 		if (params["args"].get_type() != Variant::ARRAY) {
@@ -368,9 +439,26 @@ Variant GaiAgentServer::_rpc_object_call(const Variant &p_params) {
 		}
 		args = params["args"];
 	}
+	MethodInfo method_info;
+	bool has_method = false;
+	List<MethodInfo> methods;
+	object->get_method_list(&methods);
+	for (const MethodInfo &info : methods) {
+		if (info.name == method) {
+			method_info = info;
+			has_method = true;
+			break;
+		}
+	}
 	Vector<Variant> values;
-	for (const Variant &arg : args) {
-		values.push_back(_to_variant(arg));
+	String error;
+	for (int i = 0; i < args.size(); i++) {
+		const Variant::Type type = has_method && i < method_info.arguments.size() ? method_info.arguments[i].type : Variant::NIL;
+		const Variant value = _to_variant(args[i], type, error);
+		if (!error.is_empty()) {
+			return _error(error);
+		}
+		values.push_back(value);
 	}
 	Vector<const Variant *> pointers;
 	for (int i = 0; i < values.size(); i++) {
@@ -460,6 +548,9 @@ Variant GaiAgentServer::_rpc_object_free(const Variant &p_params) {
 		return _error("unknown handle");
 	}
 	const ObjectID id = object->get_instance_id();
+	if (!created.has(id) && !refs.has(id)) {
+		return _error("refusing to free an object the bridge did not create; use node.delete for a tree node");
+	}
 	if (Node *node = Object::cast_to<Node>(object)) {
 		if (node->is_inside_tree()) {
 			node->queue_free();
@@ -478,11 +569,12 @@ Variant GaiAgentServer::_rpc_object_free(const Variant &p_params) {
 Variant GaiAgentServer::_rpc_scene_current(const Variant &p_params) {
 	(void)p_params;
 	Dictionary result;
-	if (tree != nullptr) {
-		Node *scene = tree->get_current_scene();
-		if (scene != nullptr) {
-			result["scene"] = _object_info(scene);
-		}
+	Node *scene = _editor_scene_root();
+	if (scene == nullptr && tree != nullptr) {
+		scene = tree->get_current_scene();
+	}
+	if (scene != nullptr) {
+		result["scene"] = _object_info(scene);
 	}
 	return result;
 }
@@ -492,6 +584,10 @@ Variant GaiAgentServer::_rpc_scene_change(const Variant &p_params) {
 		return _error("params must be an object");
 	}
 	const Dictionary params = p_params;
+	const String refusal = _editor_refusal(params, "scene.change");
+	if (!refusal.is_empty()) {
+		return _error(refusal);
+	}
 	const String path = params.get("path", "");
 	if (path.is_empty()) {
 		return _error("path is required");
@@ -647,7 +743,12 @@ Variant GaiAgentServer::_rpc_project_set(const Variant &p_params) {
 	if (key.is_empty() || !params.has("value")) {
 		return _error("key and value are required");
 	}
-	ProjectSettings::get_singleton()->set_setting(key, _to_variant(params["value"]));
+	String error;
+	const Variant value = _to_variant(params["value"], Variant::NIL, error);
+	if (!error.is_empty()) {
+		return _error(error);
+	}
+	ProjectSettings::get_singleton()->set_setting(key, value);
 	return _json_value(ProjectSettings::get_singleton()->get_setting(key));
 }
 
@@ -673,6 +774,12 @@ Variant GaiAgentServer::_rpc_run_status(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_run_pause(const Variant &p_params) {
+	if (p_params.get_type() == Variant::DICTIONARY) {
+		const String refusal = _editor_refusal(p_params, "run.pause");
+		if (!refusal.is_empty()) {
+			return _error(refusal);
+		}
+	}
 	(void)p_params;
 	if (tree == nullptr) {
 		return _error("no scene tree");
@@ -682,6 +789,12 @@ Variant GaiAgentServer::_rpc_run_pause(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_run_resume(const Variant &p_params) {
+	if (p_params.get_type() == Variant::DICTIONARY) {
+		const String refusal = _editor_refusal(p_params, "run.resume");
+		if (!refusal.is_empty()) {
+			return _error(refusal);
+		}
+	}
 	(void)p_params;
 	if (tree == nullptr) {
 		return _error("no scene tree");
@@ -691,6 +804,12 @@ Variant GaiAgentServer::_rpc_run_resume(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_run_step(const Variant &p_params) {
+	if (p_params.get_type() == Variant::DICTIONARY) {
+		const String refusal = _editor_refusal(p_params, "run.step");
+		if (!refusal.is_empty()) {
+			return _error(refusal);
+		}
+	}
 	if (p_params.get_type() != Variant::DICTIONARY) {
 		return _error("params must be an object");
 	}
@@ -706,6 +825,12 @@ Variant GaiAgentServer::_rpc_run_step(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_run_time_scale(const Variant &p_params) {
+	if (p_params.get_type() == Variant::DICTIONARY) {
+		const String refusal = _editor_refusal(p_params, "run.time_scale");
+		if (!refusal.is_empty()) {
+			return _error(refusal);
+		}
+	}
 	if (p_params.get_type() != Variant::DICTIONARY) {
 		return _error("params must be an object");
 	}
@@ -719,6 +844,12 @@ Variant GaiAgentServer::_rpc_run_time_scale(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_run_quit(const Variant &p_params) {
+	if (p_params.get_type() == Variant::DICTIONARY) {
+		const String refusal = _editor_refusal(p_params, "run.quit");
+		if (!refusal.is_empty()) {
+			return _error(refusal);
+		}
+	}
 	(void)p_params;
 	if (tree == nullptr) {
 		return _error("no scene tree");
@@ -728,6 +859,12 @@ Variant GaiAgentServer::_rpc_run_quit(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_input_action(const Variant &p_params) {
+	if (p_params.get_type() == Variant::DICTIONARY) {
+		const String refusal = _editor_refusal(p_params, "input.action");
+		if (!refusal.is_empty()) {
+			return _error(refusal);
+		}
+	}
 	if (p_params.get_type() != Variant::DICTIONARY) {
 		return _error("params must be an object");
 	}
@@ -746,6 +883,12 @@ Variant GaiAgentServer::_rpc_input_action(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_input_key(const Variant &p_params) {
+	if (p_params.get_type() == Variant::DICTIONARY) {
+		const String refusal = _editor_refusal(p_params, "input.key");
+		if (!refusal.is_empty()) {
+			return _error(refusal);
+		}
+	}
 	if (p_params.get_type() != Variant::DICTIONARY) {
 		return _error("params must be an object");
 	}
@@ -763,6 +906,12 @@ Variant GaiAgentServer::_rpc_input_key(const Variant &p_params) {
 }
 
 Variant GaiAgentServer::_rpc_input_mouse(const Variant &p_params) {
+	if (p_params.get_type() == Variant::DICTIONARY) {
+		const String refusal = _editor_refusal(p_params, "input.mouse");
+		if (!refusal.is_empty()) {
+			return _error(refusal);
+		}
+	}
 	if (p_params.get_type() != Variant::DICTIONARY) {
 		return _error("params must be an object");
 	}

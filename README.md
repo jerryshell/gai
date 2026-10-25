@@ -82,9 +82,9 @@ tests. See `docs/gai/upstream.md`.
 
 ## Roadmap
 
-- **Engine agent bridge.** Runtime and editor reflection work: every class,
-  property, method, signal, and singleton is reachable. Event streams, export
-  helpers, and multiple clients are planned. Design:
+- **Engine agent bridge.** Runtime and editor reflection work: every native
+  class, property, method, signal, and singleton is reachable. Event streams,
+  signal connections, export helpers, and multiple clients are planned. Design:
   `docs/gai/features/agent-bridge.md`.
 - **C# .NET web export.** Upstream 4.7.2 refuses it. The available patch targets
   4.8-dev and Windows. It needs a custom engine build. Design:
@@ -97,8 +97,9 @@ Version 0.1.0. The display name is gai. Internal identifiers and the binary name
 stay `godot` while the build system depends on them. The editor icon, splash,
 and UI strings are still Godot. The agent bridge exposes the engine's reflection in runtime and editor
 modes. It works in the gai source build, which `bootstrap` builds by default.
-The official fallback lacks it. Screenshots need a display. Event streams,
-export helpers, and the .NET web export are not implemented.
+The official fallback lacks it. The token holder has full local access, so gai
+is not a sandbox. Screenshots need a display. Event streams, signal
+connections, export helpers, and the .NET web export are not implemented.
 
 Tested on Linux. The macOS and Windows install paths are implemented but not
 tested in this release.
