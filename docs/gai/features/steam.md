@@ -88,3 +88,5 @@ changes local. Never open a pull request or issue upstream with gai changes.
 - The bridge lists and emits signals. It does not connect or await them.
 - Success paths need a running Steam client and a real app id. CI covers the
   failure path, the class surface, and the settings.
+- Linux is verified. macOS and Windows need a build and a run on those
+  platforms.

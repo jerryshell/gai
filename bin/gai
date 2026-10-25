@@ -289,6 +289,7 @@ def install_steam_sdk(source: Path) -> None:
         print("gai: this SDK has no library for this platform")
     else:
         print(f"gai: runtime library {library.relative_to(ROOT)}")
+    print("gai: rebuild the engine to include Steam")
 
 
 def cmd_steam_status(args) -> int:
@@ -410,7 +411,8 @@ def cmd_steam_vendor(args) -> int:
         text = re.sub(r"(commit\s+`)[0-9a-f]+(`)", rf"\g<1>{commit}\g<2>", text, count=1)
         readme.write_text(text, encoding="utf-8")
     print(f"gai: vendored GodotSteam {commit[:8] if commit else 'from a plain directory'}")
-    print("gai: rebuild with `bin/gai bootstrap`")
+    command = " ".join(str(part) for part in build_engine_command())
+    print(f"gai: rebuild with `{command}`")
     return 0
 
 
