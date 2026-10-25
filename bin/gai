@@ -96,6 +96,7 @@ def built_engine():
         and path.name.startswith("godot.")
         and ".editor." in path.name
         and ".console." not in path.name
+        and not path.name.endswith(".debug")
     ]
     if not found:
         return None
