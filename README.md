@@ -42,7 +42,7 @@ On Windows, run `python bin/gai` in place of `bin/gai`.
 | `game/` | Your Godot project. |
 | engine source | Godot 4.7.2-stable, unchanged except the display name and project URL. |
 | `.gai/` | gai metadata: version, upstream base, layer rules. |
-| `bin/gai` | The command line. Python 3, no dependencies. |
+| `bin/gai` | The command line. Python 3.8 or later, no dependencies. |
 | `docs/gai/` | Architecture, upstream sync, build, and decisions. |
 
 ## Stay close to upstream
@@ -68,7 +68,8 @@ Read `docs/gai/upstream.md` before you sync.
 
 Version 0.1.0. The display name is gai. Internal identifiers and the binary name
 stay `godot` so upstream merges stay cheap. The editor icon, splash, and UI
-strings are still Godot. There is no in-editor AI panel.
+strings are still Godot. There is no in-editor AI panel and no headless export
+command yet.
 
 Tested on Linux. The macOS and Windows install paths are implemented but not
 tested in this release.

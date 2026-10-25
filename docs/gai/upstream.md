@@ -27,7 +27,7 @@ If it stops with other conflicts, resolve only the listed files.
 | File | Policy |
 | --- | --- |
 | `README.md` | Keep ours. Then add any upstream fact the front door needs. |
-| `version.py` | The tool resolves it. Keep it only if the automatic step failed. |
+| `version.py` | The tool resolves it. Resolve it by hand only if the automatic step failed. |
 | `.gitignore` | Keep both sets of rules. |
 
 Then:
@@ -54,7 +54,8 @@ bin/gai check
 python3 tests/test_upstream.py
 ```
 
-Run the test suite. Commit any doc updates.
+Run the test suite. Commit any doc updates. If Godot changes the release asset
+names, update `RELEASES` in `bin/gai`.
 
 If you build the engine from source, rebuild it. `bin/gai` prefers a source build
 under `bin/godot.*.editor.*` over the downloaded binary.
