@@ -14,19 +14,27 @@ Godot 4.7.2 refuses .NET web export in the engine source.
 Exporting to Web is currently not supported in Godot 4 when using C#/.NET.
 ```
 
-I downloaded the official `4.7.2-stable_mono_linux_x86_64` editor and ran a
-headless Web export on a plain project. It failed with the same message. The
-check also rejects a project that does not use C# when the editor is a .NET
-build.
+I downloaded the official `4.7.2-stable_mono_linux_x86_64` editor and ran:
+
+```sh
+Godot_v4.7.2-stable_mono_linux.x86_64 --headless --path <project> --export-release Web <out>/index.html
+```
+
+It failed with the same message. The check also rejects a project that does not
+use C# when the editor is a .NET build. The run is recorded in
+`docs/gai/decisions/worklog.tsv`.
 
 Deleting that one guard is not enough. The export needs a .NET WebAssembly
 runtime, custom web templates, and a matching engine build.
 
 ## Available work
 
-- `raulsntos` wrote the experimental engine support.
-- `ComplexRobot/godot-dotnet-web-export` publishes a fork and prebuilt binaries.
-- Its releases are for `4.8-dev7` (2026-09-30), Windows only, about 162 MB.
+- `raulsntos` wrote the experimental engine support:
+  https://github.com/raulsntos/godot4-web-dotnet-prototype
+- `ComplexRobot/godot-dotnet-web-export` publishes a fork and prebuilt binaries:
+  https://github.com/ComplexRobot/godot-dotnet-web-export
+- Its releases are for `4.8-dev7` (2026-09-30), Windows only, about 162 MB:
+  https://github.com/ComplexRobot/godot-dotnet-web-export/releases
 - It requires .NET 9, the `wasm-tools` workload, and custom web templates.
 - Its README lists limits: no GDExtensions, no globalization, some BCL APIs do
   not work, and the host must send SharedArrayBuffer headers.

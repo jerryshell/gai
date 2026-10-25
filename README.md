@@ -55,8 +55,8 @@ its conflict, rebuilds the engine, and reruns its tests. See
 | Path | What it is |
 | --- | --- |
 | `game/` | Your Godot project. |
-| engine source | Godot 4.7.2-stable, plus the gai engine features. |
-| `.gai/` | gai metadata: version, upstream base, feature manifests, layer rules. |
+| engine source | Godot 4.7.2-stable, plus the active gai engine changes. |
+| `.gai/` | gai metadata: version, upstream base, feature manifests, ownership rules. |
 | `bin/gai` | The command line. Python 3.8 or later, no dependencies. |
 | `docs/gai/` | Architecture, upstream sync, build, features, and decisions. |
 

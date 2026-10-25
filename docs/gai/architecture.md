@@ -59,9 +59,9 @@ first vertical feature is the engine agent bridge:
 - log tail;
 - test scenes.
 
-`bin/gai` is the client. The bridge runs inside the editor or the game, bound to
-localhost with a token. The current CLI cannot see live editor state. The bridge
-closes that gap. The design is in `features/agent-bridge.md`.
+`bin/gai` will be the client. The bridge will run inside the editor or the game,
+bound to localhost with a token. The current CLI cannot see live editor state.
+The bridge will close that gap. The design is in `features/agent-bridge.md`.
 
 ## Build gate
 

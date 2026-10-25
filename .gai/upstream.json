@@ -7,6 +7,8 @@
     ".agents/skills/godot-game/SKILL.md",
     ".gai/upstream.json",
     "AGENTS.md",
+    "NOTICE.md",
+    "README.md",
     "bin/gai",
     "docs/gai/architecture.md",
     "docs/gai/build.md",

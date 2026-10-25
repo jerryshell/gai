@@ -20,7 +20,7 @@ editor. It runs inside the engine.
   `editor/editor_node.cpp`. All protocol code stays in the module.
 - JSON-RPC 2.0 over a localhost TCP socket, one JSON object per line.
 - Editor mode and runtime mode.
-- `bin/gai agent` is the client. There is no separate daemon.
+- `bin/gai agent` will be the client. There is no separate daemon.
 
 ## Methods
 
@@ -45,7 +45,8 @@ editor. It runs inside the engine.
 - Bind `127.0.0.1` only. There is no remote mode.
 - Write a random token to `.gai/agent.token`. The file is ignored by git.
 - Every request must carry the token.
-- The server is off by default. `bin/gai agent start` turns it on for a session.
+- The server will be off by default. The planned `bin/gai agent start` command
+  will turn it on for a session.
 
 ## Tests
 

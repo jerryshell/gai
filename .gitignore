@@ -412,3 +412,6 @@ $RECYCLE.BIN/
 !/bin/
 /bin/*
 !/bin/gai
+
+# Engine agent bridge token
+/.gai/agent.token

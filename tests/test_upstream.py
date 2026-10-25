@@ -126,6 +126,21 @@ class UpstreamTest(unittest.TestCase):
             )
             + "\n",
         )
+        self.repo.write(
+            ".gai/features/planned-engine.json",
+            json.dumps(
+                {
+                    "title": "Planned engine feature",
+                    "status": "planned",
+                    "risk": "high",
+                    "paths": ["modules/planned/"],
+                    "docs": [],
+                    "tests": [],
+                },
+                indent=2,
+            )
+            + "\n",
+        )
         self.repo.git("add", ".gai")
         self.repo.git("commit", "-q", "-m", "record upstream base and features")
 
@@ -269,7 +284,46 @@ class UpstreamTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("branding", result.stdout)
         self.assertIn("test-engine", result.stdout)
+        self.assertIn("version.py (branding)", result.stdout)
         self.assertIn("unclaimed: 0", result.stdout)
+
+    def test_planned_feature_does_not_own_paths(self):
+        self.repo.write("modules/planned/thing.cpp", "// planned\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "planned path edit")
+        result = self.repo.gai("upstream", "check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("modules/planned/thing.cpp", result.stdout)
+
+        path = self.repo.root / ".gai" / "features" / "planned-engine.json"
+        data = json.loads(path.read_text())
+        data["status"] = "active"
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        self.repo.git("add", ".gai/features/planned-engine.json")
+        self.repo.git("commit", "-q", "-m", "activate planned feature")
+        self.assert_fork_ok()
+
+    def test_unknown_feature_status_fails(self):
+        path = self.repo.root / ".gai" / "features" / "branding.json"
+        data = json.loads(path.read_text())
+        data["status"] = "merged"
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        result = self.repo.gai("upstream", "check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unknown status", (result.stdout + result.stderr).lower())
+
+    def test_report_shows_untracked_files(self):
+        self.repo.write("editor/tmp_t.cpp", "// untracked\n")
+        result = self.repo.gai("upstream", "report")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("?? editor/tmp_t.cpp (unclaimed)", result.stdout)
+        self.assertIn("unclaimed: 1", result.stdout)
+
+    def test_doctor_reports_untracked_engine_file(self):
+        self.repo.write("editor/tmp_t.cpp", "// untracked\n")
+        result = self.repo.gai("doctor")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("untracked files with no owner", result.stdout)
 
 
 if __name__ == "__main__":

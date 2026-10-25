@@ -31,7 +31,7 @@ owner:
 ```text
 merge conflicts:
   README.md (workspace)
-  platform/web/export/export_plugin.cpp (dotnet-web)
+  platform/web/export/export_plugin.cpp (unclaimed)
 ```
 
 - The feature owner resolves its files. Read the feature doc and keep the

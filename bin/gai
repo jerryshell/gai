@@ -478,7 +478,7 @@ def load_features():
         except (OSError, json.JSONDecodeError) as exc:
             die(f"`{path.relative_to(ROOT)}` is not valid JSON: {exc}")
         feature["id"] = path.stem
-        if feature.get("status") not in ("active", "planned", "merged"):
+        if feature.get("status") not in ("active", "planned"):
             die(f"`{path.relative_to(ROOT)}` has an unknown status")
         features.append(feature)
     return features
@@ -543,14 +543,16 @@ def missing_required(state: dict, staged: bool = False):
     return missing
 
 
-def untracked_violations():
+def untracked_paths():
     result = git("ls-files", "--others", "--exclude-standard")
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def untracked_violations():
     features = load_features()
-    violations = []
-    for path in result.stdout.splitlines():
-        if path.strip() and not path_allowed(path, features):
-            violations.append(("??", path))
-    return violations
+    return [
+        ("??", path) for path in untracked_paths() if not path_allowed(path, features)
+    ]
 
 
 def print_missing(missing) -> None:
@@ -619,18 +621,6 @@ def cmd_upstream_report(args) -> int:
     changed = git("diff", "--name-status", "--no-renames", state["commit"]).stdout.splitlines()
     counts = {}
     unclaimed = []
-    for line in changed:
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        status, path = parts[0], parts[-1]
-        owner = feature_for_path(path, features)
-        if owner is None and path_allowed(path, features):
-            owner = "workspace"
-        if owner is None:
-            unclaimed.append((status, path))
-        else:
-            counts[owner] = counts.get(owner, 0) + 1
 
     print(f"base {state['tag']} {state['commit'][:8]}")
     print("features:")
@@ -639,13 +629,38 @@ def cmd_upstream_report(args) -> int:
             f"  {feature['id']} {feature.get('status', '?')} "
             f"risk={feature.get('risk', '?')} {feature.get('title', '')}"
         )
+
     print("changes:")
+    for line in changed:
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        status, path = parts[0], parts[-1]
+        owner = feature_for_path(path, features)
+        if owner is None and path_allowed(path, features):
+            owner = "workspace"
+        print(f"  {status} {path} ({owner or 'unclaimed'})")
+        if owner is None:
+            unclaimed.append((status, path))
+        else:
+            counts[owner] = counts.get(owner, 0) + 1
+
+    for path in untracked_paths():
+        owner = feature_for_path(path, features)
+        if owner is None and path_allowed(path, features):
+            owner = "workspace"
+        print(f"  ?? {path} ({owner or 'unclaimed'})")
+        if owner is None:
+            unclaimed.append(("??", path))
+        else:
+            counts[owner] = counts.get(owner, 0) + 1
+
+    print("summary:")
     for owner in sorted(counts):
         print(f"  {owner}: {counts[owner]}")
+    print(f"unclaimed: {len(unclaimed)}")
     if unclaimed:
-        print_unclaimed(unclaimed)
-    else:
-        print("unclaimed: 0")
+        print('Claim each unclaimed path in `.gai/features/<name>.json` with `"status": "active"`.')
     return 0
 
 
@@ -826,6 +841,9 @@ def cmd_doctor(args) -> int:
         unclaimed = unclaimed_changes(state["commit"])
         if unclaimed:
             problems.append(f"{len(unclaimed)} unclaimed engine changes")
+        untracked = untracked_violations()
+        if untracked:
+            problems.append(f"{len(untracked)} untracked files with no owner")
         missing = missing_required(state)
         if missing:
             problems.append(f"{len(missing)} required files are missing")
@@ -905,8 +923,8 @@ def build_parser() -> argparse.ArgumentParser:
     upstream_sub = upstream.add_subparsers(dest="upstream_command", required=True)
     status = upstream_sub.add_parser("status", help="show the recorded base and merge state")
     status.set_defaults(func=cmd_upstream_status)
-    layer = upstream_sub.add_parser("check", help="fail if an engine change has no feature owner")
-    layer.set_defaults(func=cmd_upstream_check)
+    check_parser = upstream_sub.add_parser("check", help="fail if an engine change has no feature owner")
+    check_parser.set_defaults(func=cmd_upstream_check)
     report = upstream_sub.add_parser("report", help="list features, changed files, and unclaimed paths")
     report.set_defaults(func=cmd_upstream_report)
     merge = upstream_sub.add_parser("merge", help="fetch and merge an upstream tag")

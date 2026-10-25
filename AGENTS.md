@@ -68,7 +68,7 @@ engine task does all of this:
 1. Read `docs/gai/architecture.md` and `docs/gai/upstream.md`.
 2. Add or activate a feature in `.gai/features/`. Claim every engine path.
 3. Add the feature doc and tests.
-4. Build the engine. `bin/gai check` tests the game, not the engine.
+4. Build the engine (`docs/gai/build.md`). `bin/gai check` tests the game, not the engine.
 5. Run `bin/gai upstream check` before you commit.
 
 A deep engine change that no feature owns is a bug in the change, not in the
