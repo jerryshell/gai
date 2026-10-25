@@ -212,6 +212,12 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn("game/project.godot", result.stdout)
         self.assertIn("required files are missing", result.stdout)
 
+    def test_untracked_file_outside_the_layer_fails(self):
+        self.repo.write("core/evil.cpp", "// local\n")
+        result = self.repo.gai("upstream", "check")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("core/evil.cpp", result.stdout)
+
     def test_merge_refuses_a_dirty_tree(self):
         self.make_upstream({"core/os/os.cpp": "// upstream change\n"})
         self.repo.write("README.md", "# local edit\n")

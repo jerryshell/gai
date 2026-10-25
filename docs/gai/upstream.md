@@ -86,5 +86,5 @@ under `bin/godot.*.editor.*` over the downloaded binary.
 bin/gai upstream check
 ```
 
-The command fails on a path outside `.gai/upstream.json`. CI runs it with full
-history.
+The command fails on a committed or untracked path outside
+`.gai/upstream.json`. CI runs it with full history.

@@ -506,6 +506,15 @@ def missing_required(state: dict, staged: bool = False):
     return missing
 
 
+def untracked_violations(state: dict):
+    result = git("ls-files", "--others", "--exclude-standard")
+    violations = []
+    for path in result.stdout.splitlines():
+        if path.strip() and not path_allowed(path, state):
+            violations.append(("??", path))
+    return violations
+
+
 def print_missing(missing) -> None:
     print("layer: required files are missing")
     for path in missing:
@@ -545,6 +554,13 @@ def cmd_upstream_check(args) -> int:
     missing = missing_required(state)
     if missing:
         print_missing(missing)
+        return 1
+    untracked = untracked_violations(state)
+    if untracked:
+        print("layer: untracked files outside the layer")
+        for _, path in untracked:
+            print(f"  {path}")
+        print("Move the file under an owned path, or add it to `.gai/upstream.json`.")
         return 1
     changed = git("diff", "--name-only", state["commit"], "HEAD").stdout.splitlines()
     print(f"base {state['tag']} {state['commit'][:8]}")
