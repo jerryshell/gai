@@ -13,6 +13,8 @@
 #include "core/object/script_language.h"
 #include "core/variant/variant_utility.h"
 
+#include <cstring>
+
 GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("ping", callable_mp(this, &GaiAgentServer::_rpc_ping));
 	rpc.set_method("scene.tree", callable_mp(this, &GaiAgentServer::_rpc_scene_tree));
@@ -68,33 +70,60 @@ void GaiAgentServer::stop() {
 		server->stop();
 		server = Ref<TCPServer>();
 	}
+	_drop_client();
+}
+
+void GaiAgentServer::_drop_client() {
 	client = Ref<StreamPeerTCP>();
 	line_buffer.clear();
+	output_buffer.clear();
+	output_offset = 0;
 }
 
 void GaiAgentServer::poll() {
 	if (!server.is_valid() || !server->is_listening()) {
 		return;
 	}
-	if (client.is_null()) {
-		if (!server->is_connection_available()) {
-			return;
+	const uint64_t now = OS::get_singleton()->get_ticks_msec();
+	while (server->is_connection_available()) {
+		Ref<StreamPeerTCP> incoming = server->take_connection();
+		if (client.is_null() || (line_buffer.is_empty() && output_buffer.is_empty())) {
+			_drop_client();
+			client = incoming;
+			client_deadline = now + 10000;
+		} else {
+			incoming->disconnect_from_host();
 		}
-		client = server->take_connection();
-		line_buffer.clear();
-		client_since = OS::get_singleton()->get_ticks_msec();
 	}
 	if (client.is_null()) {
 		return;
 	}
-	if (client->get_status() != StreamPeerTCP::STATUS_CONNECTED) {
-		client = Ref<StreamPeerTCP>();
-		line_buffer.clear();
+	client->poll();
+	if (client->get_status() != StreamPeerTCP::STATUS_CONNECTED || now > client_deadline) {
+		_drop_client();
 		return;
 	}
-	if (OS::get_singleton()->get_ticks_msec() - client_since > 10000) {
-		client = Ref<StreamPeerTCP>();
-		line_buffer.clear();
+
+	if (!output_buffer.is_empty()) {
+		while (output_offset < output_buffer.size()) {
+			int sent = 0;
+			const Error err = client->put_partial_data(
+					output_buffer.ptr() + output_offset,
+					output_buffer.size() - output_offset,
+					sent);
+			if (err == ERR_BUSY) {
+				return;
+			}
+			if (err != OK) {
+				_drop_client();
+				return;
+			}
+			if (sent <= 0) {
+				return;
+			}
+			output_offset += sent;
+		}
+		_drop_client();
 		return;
 	}
 
@@ -104,14 +133,13 @@ void GaiAgentServer::poll() {
 		if (client->get_partial_data(&byte, 1, read) != OK || read != 1) {
 			break;
 		}
-		client_since = OS::get_singleton()->get_ticks_msec();
 		if (byte == '\n') {
 			if (!line_buffer.is_empty()) {
 				const String line = String::utf8((const char *)line_buffer.ptr(), line_buffer.size()).strip_edges();
 				line_buffer.clear();
 				if (!line.is_empty()) {
 					_handle(line);
-					if (client.is_null()) {
+					if (client.is_null() || !output_buffer.is_empty()) {
 						line_buffer.clear();
 						return;
 					}
@@ -126,7 +154,6 @@ void GaiAgentServer::poll() {
 		if (line_buffer.size() > 65536) {
 			line_buffer.clear();
 			_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Request too large")) + "\n");
-			client = Ref<StreamPeerTCP>();
 			return;
 		}
 	}
@@ -152,25 +179,38 @@ void GaiAgentServer::_handle(const String &p_line) {
 	}
 
 	const String response = rpc.process_string(p_line);
-	if (!response.is_empty()) {
-		_send(response + "\n");
+	if (response.is_empty()) {
+		_drop_client();
+		return;
 	}
+
+	JSON response_json;
+	if (response_json.parse(response) == OK) {
+		const Variant response_data = response_json.get_data();
+		if (response_data.get_type() == Variant::DICTIONARY) {
+			const Dictionary response_dict = response_data;
+			if (response_dict.has("result") && response_dict["result"].get_type() == Variant::DICTIONARY) {
+				const Dictionary result = response_dict["result"];
+				if (result.has("error")) {
+					_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_PARAMS, String(result["error"]), id)) + "\n");
+					return;
+				}
+			}
+		}
+	}
+	_send(response + "\n");
 }
 
 void GaiAgentServer::_send(const String &p_payload) {
 	if (client.is_null()) {
 		return;
 	}
-	if (client->get_status() != StreamPeerTCP::STATUS_CONNECTED) {
-		client = Ref<StreamPeerTCP>();
-		return;
-	}
 	const CharString utf8 = p_payload.utf8();
-	if (client->put_data((const uint8_t *)utf8.get_data(), utf8.length()) != OK) {
-		client = Ref<StreamPeerTCP>();
-		return;
+	output_buffer.resize(utf8.length());
+	if (utf8.length() > 0) {
+		memcpy(output_buffer.ptrw(), utf8.get_data(), utf8.length());
 	}
-	client = Ref<StreamPeerTCP>();
+	output_offset = 0;
 }
 
 Node *GaiAgentServer::_node_for(const String &p_path) {
@@ -303,6 +343,30 @@ Variant GaiAgentServer::_rpc_node_set(const Variant &p_params) {
 		const Variant parsed = VariantUtilityFunctions::str_to_var(value);
 		if (parsed.get_type() != Variant::NIL) {
 			value = parsed;
+		}
+	}
+
+	List<PropertyInfo> property_list;
+	node->get_property_list(&property_list);
+	const PropertyInfo *property_info = nullptr;
+	for (const PropertyInfo &info : property_list) {
+		if (info.name == property) {
+			property_info = &info;
+			break;
+		}
+	}
+	if (property_info == nullptr) {
+		error["error"] = "unknown property: " + property;
+		return error;
+	}
+	if (property_info->type != Variant::NIL && value.get_type() != property_info->type) {
+		if (!Variant::can_convert_strict(value.get_type(), property_info->type)) {
+			error["error"] = "invalid value for " + property;
+			return error;
+		}
+		if (property_info->type == Variant::BOOL) {
+			error["error"] = "invalid value for " + property;
+			return error;
 		}
 	}
 	node->set(property, value);

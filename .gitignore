@@ -413,9 +413,11 @@ $RECYCLE.BIN/
 /bin/*
 !/bin/gai
 
-# Engine agent bridge token
-/.gai/agent.token
 
 # Agent bridge session
 /.gai/agent.json
 /.gai/agent.log
+
+# Agent bridge runtime files
+/.gai/agent.lock
+/.gai/agent.tmp

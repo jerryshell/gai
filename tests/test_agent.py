@@ -23,7 +23,7 @@ def built_engine():
     return None
 
 
-ENGINE = os.environ.get("GAI_GODOT") or built_engine()
+ENGINE = built_engine() or os.environ.get("GAI_GODOT")
 
 
 class AgentTest(unittest.TestCase):
@@ -74,6 +74,21 @@ class AgentTest(unittest.TestCase):
         start = self.run_gai("agent", "start")
         self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
         self.assertIn("agent ready", start.stdout)
+        if os.name == "posix":
+            mode = (self.tmp / ".gai" / "agent.json").stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
+        second = self.run_gai("agent", "start")
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn("already running", second.stdout)
+
+        state = json.loads((self.tmp / ".gai" / "agent.json").read_text(encoding="utf-8"))
+        idle = socket.create_connection(("127.0.0.1", state["port"]), timeout=5)
+        try:
+            status = self.run_gai("agent", "status")
+            self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        finally:
+            idle.close()
 
         unauthorized = self.raw(
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "scene.tree", "params": {}, "token": "wrong"}) + "\n"
@@ -116,8 +131,65 @@ class AgentTest(unittest.TestCase):
         get_again = self.run_gai("agent", "get", "/root/Main", "--property", "visible")
         self.assertFalse(json.loads(get_again.stdout)["properties"]["visible"])
 
+        missing = self.run_gai("agent", "get", "/root/Nope")
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("node not found", missing.stderr)
+
+        unknown = self.run_gai("agent", "set", "/root/Main", "nope", "1")
+        self.assertEqual(unknown.returncode, 1)
+        self.assertIn("unknown property", unknown.stderr)
+
+        wrong_type = self.run_gai("agent", "set", "/root/Main", "visible", "notabool")
+        self.assertEqual(wrong_type.returncode, 1)
+        self.assertIn("invalid value", wrong_type.stderr)
+
         stop = self.run_gai("agent", "stop")
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_concurrent_start_keeps_one_game(self):
+        env = dict(os.environ)
+        env["GAI_GODOT"] = str(ENGINE)
+        processes = [
+            subprocess.Popen(
+                [sys.executable, str(self.tmp / "bin" / "gai"), "agent", "start"],
+                cwd=str(self.tmp),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            for _ in range(2)
+        ]
+        outputs = []
+        for process in processes:
+            out, err = process.communicate(timeout=40)
+            outputs.append(out + err)
+            self.assertEqual(process.returncode, 0, out + err)
+        self.assertTrue(any("agent ready" in output for output in outputs), outputs)
+        self.assertTrue(any("already running" in output for output in outputs), outputs)
+
+    def test_stop_refuses_a_foreign_pid(self):
+        sleep = shutil.which("sleep")
+        if not sleep:
+            self.skipTest("sleep is not available")
+        process = subprocess.Popen([sleep, "30"])
+        self.addCleanup(lambda: process.poll() is None and (process.kill(), process.wait()))
+        state = {
+            "pid": process.pid,
+            "port": 1,
+            "token": "not-the-agent",
+            "engine": str(ENGINE),
+            "starttime": "0",
+        }
+        (self.tmp / ".gai" / "agent.json").write_text(
+            json.dumps(state) + "\n", encoding="utf-8"
+        )
+        result = self.run_gai("agent", "stop")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("not the agent", result.stdout)
+        self.assertIsNone(process.poll())
+        self.assertFalse((self.tmp / ".gai" / "agent.json").exists())
 
 
 if __name__ == "__main__":

@@ -11,13 +11,21 @@ Manifest: `.gai/features/agent-bridge.json`
 speaks JSON-RPC 2.0 over newline-delimited JSON. The CLI can read the scene
 tree, read node properties, and set a property.
 
-- The token is random per session. The CLI stores the pid, port, and token in
-  `.gai/agent.json` with mode 600. Git ignores the file.
-- The server binds 127.0.0.1 only. It closes a client after one response and
-  drops a client that sends nothing for 10 seconds.
-- The server reuses the engine `jsonrpc` module for framing and errors.
+- The token is random per session. The CLI stores the pid, port, token, engine,
+  and process start time in `.gai/agent.json` with mode 600. Git ignores the
+  file. `agent start` and `agent stop` take a lock.
+- The server binds 127.0.0.1 only. It serves one client at a time. A request
+  must finish within 10 seconds. A new idle client replaces an idle connection;
+  extra connections during a request are dropped. The server closes after one
+  response. A notification gets no response.
+- The server uses the engine `jsonrpc` module for dispatch and error responses.
+  gai buffers newline-delimited frames and writes responses with
+  `put_partial_data`, so a slow reader does not block the game frame.
+- A node path or property error is a JSON-RPC `-32602` error. The CLI exits 1.
 - `bin/gai agent start` refuses the downloaded engine. The bridge is only in a
   source build with `modules/gai_agent/`.
+- `agent stop` verifies the process start time and the engine path before it
+  sends a signal. A reused pid is not killed.
 
 ## Commands
 
@@ -51,9 +59,17 @@ bin/gai agent stop
 
 ## Tests
 
-`tests/test_agent.py` copies `game/` to a temporary directory, starts the
-bridge, reads the tree, changes `visible`, and reads it back. It needs a source
-build with the module.
+Run the tests with:
+
+```sh
+python3 tests/test_agent.py
+```
+
+The tests copy `game/` to a temporary directory, start the bridge, read the
+tree, change `visible`, and read it back. They also check the auth and parse
+errors, the state file mode, a second start, concurrent starts, and that stop
+does not kill a foreign pid. They need a source build with the module. CI does
+not run them without an engine build.
 
 ## Build
 
@@ -67,6 +83,7 @@ disable `jsonrpc`, the gai module does not build.
 
 - Run control, input injection, screenshots, log tail, and test scenes.
 - Editor mode. The current server runs in the game process.
+- Batch requests, more than one client, and binding the port inside the engine.
 - A prebuilt gai engine for users who do not build. The default `bootstrap`
   still downloads the official Godot binary.
 

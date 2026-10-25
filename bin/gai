@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ UPSTREAM_FILE = GAI_DIR / "upstream.json"
 FEATURES_DIR = GAI_DIR / "features"
 VERSION_FILE = GAI_DIR / "version"
 AGENT_STATE = GAI_DIR / "agent.json"
+AGENT_LOCK = GAI_DIR / "agent.lock"
 AGENT_LOG = GAI_DIR / "agent.log"
 
 WORKSPACE_PREFIXES = (".agents/", ".gai/", ".github/", "bin/", "docs/gai/", "game/")
@@ -548,22 +550,97 @@ def agent_result(method: str, params=None):
     if not agent_pid_alive(int(state.get("pid", 0))):
         die("the agent process is not running. Run `bin/gai agent start` again.")
     try:
-        return agent_call(state, method, params)
+        result = agent_call(state, method, params)
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"agent: {exc}")
+    if isinstance(result, dict) and "error" in result:
+        die(f"agent: {result['error']}")
+    return result
 
 
-def agent_pid_matches(pid: int, engine) -> bool:
+@contextmanager
+def agent_lock():
+    AGENT_LOCK.parent.mkdir(parents=True, exist_ok=True)
     try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
-            "utf-8", errors="replace"
-        )
+        import fcntl
+    except ImportError:
+        yield
+        return
+    with AGENT_LOCK.open("w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def agent_starttime(pid: int):
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:
-        return True
-    return str(engine) in cmdline or "godot" in cmdline
+        return None
+    try:
+        rest = stat.rsplit(")", 1)[1].split()
+        return rest[19]
+    except (IndexError, ValueError):
+        return None
 
 
-def cmd_agent_start(args) -> int:
+def agent_pid_matches(pid: int, engine, starttime):
+    current = agent_starttime(pid)
+    if current is None:
+        return None
+    if starttime is None or str(starttime) != str(current):
+        return False
+    if engine:
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
+                "utf-8", errors="replace"
+            )
+        except OSError:
+            return False
+        if str(engine) not in cmdline:
+            return False
+    return True
+
+
+def agent_terminate(state) -> bool:
+    pid = int(state.get("pid", 0))
+    if not agent_pid_alive(pid):
+        return False
+    verified = agent_pid_matches(pid, state.get("engine", ""), state.get("starttime"))
+    if verified is None:
+        try:
+            agent_call(state, "ping", timeout=1)
+            verified = True
+        except (OSError, RuntimeError, ValueError):
+            verified = False
+    if not verified:
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    deadline = time.time() + 5
+    while time.time() < deadline and agent_pid_alive(pid):
+        time.sleep(0.1)
+    if agent_pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return True
+
+
+def write_agent_state(state: dict) -> None:
+    tmp = AGENT_STATE.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(state, indent=2) + "\n")
+    os.replace(tmp, AGENT_STATE)
+
+
+def _cmd_agent_start(args) -> int:
     existing = agent_state()
     if existing is not None:
         pid = int(existing.get("pid", 0))
@@ -574,6 +651,8 @@ def cmd_agent_start(args) -> int:
                 return 0
             except (OSError, RuntimeError, ValueError):
                 pass
+            if agent_terminate(existing):
+                print("agent: stopped an unresponsive old process")
         AGENT_STATE.unlink(missing_ok=True)
 
     engine = require_engine()
@@ -614,11 +693,8 @@ def cmd_agent_start(args) -> int:
             start_new_session=True,
         )
     state["pid"] = process.pid
-    AGENT_STATE.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    try:
-        AGENT_STATE.chmod(0o600)
-    except OSError:
-        pass
+    state["starttime"] = agent_starttime(process.pid)
+    write_agent_state(state)
 
     deadline = time.time() + 20
     while time.time() < deadline:
@@ -636,6 +712,10 @@ def cmd_agent_start(args) -> int:
             time.sleep(0.25)
 
     process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
     AGENT_STATE.unlink(missing_ok=True)
     tail = "\n".join(
         AGENT_LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]
@@ -643,32 +723,31 @@ def cmd_agent_start(args) -> int:
     die(f"the agent did not answer within 20s.\n{tail}")
 
 
-def cmd_agent_stop(args) -> int:
+def _cmd_agent_stop(args) -> int:
     state = agent_state()
     if state is None:
         print("agent is not running")
         return 0
     pid = int(state.get("pid", 0))
-    engine = state.get("engine", "")
     if agent_pid_alive(pid):
-        if engine and not agent_pid_matches(pid, engine):
-            print(f"agent: pid {pid} is not the agent; removing stale state")
+        if agent_terminate(state):
+            print("agent stopped")
         else:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-            deadline = time.time() + 5
-            while time.time() < deadline and agent_pid_alive(pid):
-                time.sleep(0.1)
-            if agent_pid_alive(pid):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+            print(f"agent: pid {pid} is not the agent; removing stale state")
+    else:
+        print("agent stopped")
     AGENT_STATE.unlink(missing_ok=True)
-    print("agent stopped")
     return 0
+
+
+def cmd_agent_start(args) -> int:
+    with agent_lock():
+        return _cmd_agent_start(args)
+
+
+def cmd_agent_stop(args) -> int:
+    with agent_lock():
+        return _cmd_agent_stop(args)
 
 
 def cmd_agent_status(args) -> int:

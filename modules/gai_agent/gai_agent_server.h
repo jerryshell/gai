@@ -14,8 +14,10 @@ class GaiAgentServer : public Object {
 	Ref<StreamPeerTCP> client;
 	JSONRPC rpc;
 	Vector<uint8_t> line_buffer;
+	Vector<uint8_t> output_buffer;
+	int output_offset = 0;
 	String token;
-	uint64_t client_since = 0;
+	uint64_t client_deadline = 0;
 	int port = 0;
 	SceneTree *tree = nullptr;
 
@@ -29,6 +31,7 @@ class GaiAgentServer : public Object {
 	Node *_node_for(const String &p_path);
 	void _handle(const String &p_line);
 	void _send(const String &p_payload);
+	void _drop_client();
 
 public:
 	GaiAgentServer();
