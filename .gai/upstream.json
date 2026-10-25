@@ -1,0 +1,24 @@
+{
+  "repo": "https://github.com/godotengine/godot.git",
+  "tag": "4.7.2-stable",
+  "commit": "ed1daf0bf001b61586d9930840f2f1394092c079",
+  "merged_at": "2026-10-25",
+  "owned_prefixes": [
+    ".gai/",
+    ".agents/",
+    "docs/gai/",
+    "game/"
+  ],
+  "owned_files": [
+    ".github/workflows/gai.yml",
+    "AGENTS.md",
+    "NOTICE.md",
+    "bin/gai",
+    "tests/test_upstream.py"
+  ],
+  "edited": [
+    ".gitignore",
+    "README.md",
+    "version.py"
+  ]
+}

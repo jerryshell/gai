@@ -396,3 +396,19 @@ $RECYCLE.BIN/
 *.msp
 *.lnk
 *.generated.props
+
+#####################
+### gai workspace ###
+#####################
+
+# Downloaded engine and command logs
+/.gai/bin/
+/.gai/logs/
+
+# Imported game cache
+/game/.godot/
+
+# The gai CLI lives in bin/, which the build rules above ignore
+!/bin/
+/bin/*
+!/bin/gai
