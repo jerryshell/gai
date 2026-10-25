@@ -70,6 +70,9 @@ Version 0.1.0. The display name is gai. Internal identifiers and the binary name
 stay `godot` so upstream merges stay cheap. The editor icon, splash, and UI
 strings are still Godot. There is no in-editor AI panel.
 
+Tested on Linux. The macOS and Windows install paths are implemented but not
+tested in this release.
+
 gai is not affiliated with the Godot Foundation. See `NOTICE.md`.
 
 ## License
