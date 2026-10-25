@@ -821,7 +821,11 @@ def cmd_check(args) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / "check.log"
 
-    steps = [("import", [engine, "--headless", "--path", GAME_DIR, "--import"])]
+    fresh_import = not (GAME_DIR / ".godot").is_dir()
+    steps = [("import", [engine, "--headless", "--path", GAME_DIR, "--import"], not fresh_import)]
+    if fresh_import:
+        print("check: first import, load-before-import errors are ignored", flush=True)
+        steps.append(("import again", [engine, "--headless", "--path", GAME_DIR, "--import"]))
     preflight = []
     if (GAME_DIR / "addons" / "godotsteam" / "godotsteam.gdextension").is_file():
         preflight.append("addons/godotsteam conflicts with the engine's built-in Steam module; remove the addon")
@@ -868,7 +872,9 @@ def cmd_check(args) -> int:
     failures = list(preflight)
     timed_out = False
     try:
-        for name, argv in steps:
+        for step in steps:
+            name, argv = step[0], step[1]
+            collect = step[2] if len(step) > 2 else True
             try:
                 result = run(
                     argv,
@@ -878,8 +884,8 @@ def cmd_check(args) -> int:
                     timeout=args.timeout,
                 )
                 text = result.stdout or ""
-                output.append(text)
-                errors = collect_errors(text)
+                output.append(("[ignored first import]\n" if not collect else "") + text)
+                errors = collect_errors(text) if collect else []
                 # The headless editor can abort at shutdown after the import. The run step still checks the assets.
                 shutdown_crash = (
                     name == "import"
@@ -887,7 +893,7 @@ def cmd_check(args) -> int:
                     and bool(errors)
                     and all('singleton" is null' in error for error in errors)
                 )
-                if result.returncode != 0 and not shutdown_crash:
+                if result.returncode != 0 and not shutdown_crash and collect:
                     failures.append(f"{name}: engine exited with code {result.returncode}")
                 for error in errors:
                     if shutdown_crash and 'singleton" is null' in error:

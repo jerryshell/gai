@@ -23,6 +23,9 @@ stay in the engine repository.
 script from it. The scene is removed after the check. Projects without autoloads
 keep the per-script parse.
 
+On a project without `.godot`, `check` imports twice. The first pass may print
+load errors for assets that do not exist yet; the second pass is the gate.
+
 Use `--scene` to run a gameplay scene after the main scene. The main scene may
 only load a menu. The extra scene exercises the gameplay scripts.
 
