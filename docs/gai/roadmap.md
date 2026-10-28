@@ -49,17 +49,24 @@ Remaining optional work: more stub signatures, inherited-method doubles, and
 the Autowork decision if native `ClassDB` assertions or the E2E server are
 needed.
 
-## P1: upstream 4.8
+## Deferred: upstream 4.8
 
-- Merge the 4.8 tag into a branch, run `upstream check --strict`, build, and
-  run the bridge, game, and MCP tests.
+Waiting for the 4.8 stable tag. Do not rehearse against 4.8 dev.
+
+- The base stays `4.7.2-stable`. Keep merging nothing from 4.8 dev.
+- When 4.8 stable is tagged: merge it into a branch, run
+  `upstream check --strict`, build, and run the bridge, game, and MCP tests.
 - Resolve feature conflicts by owner; do not widen unclaimed paths.
 - Keep a 4.7.2 maintenance branch if a game must stay on it.
 
-Done when: 4.8 builds, the full test set is green, and every conflict has an
-owner.
+Done when: the stable tag exists, 4.8 builds, the full test set is green, and
+every conflict has an owner.
 
-## P1: multi-agent and multi-human
+Why not now: a dev tag is a moving target. A rehearsal against it would test
+code that will change before release, and it would pull dev-only conflicts into
+the base without a release to justify them.
+
+## P1: multi-agent and multi-human (next)
 
 Pi Pocket is shared; the bridge is still a trusted single-user interface.
 
@@ -119,11 +126,12 @@ engine source.
 - Time from edit to a green `bin/gai check`.
 - Share of engine features with a build and a test.
 - MCP tool success rate and latency.
-- Upstream merge conflicts per release.
+- Upstream merge conflicts per release, measured after 4.8 stable.
 - Agent tasks completed without a human GUI.
 
 ## Next three tasks
 
-1. A task protocol for whitelisted, chunked long operations; read decision 0004 first.
-2. Upstream 4.8 merge rehearsal.
-3. The Autowork decision, only if native `ClassDB` assertions or E2E are needed.
+1. Multi-agent roles: read-only, write, and admin sessions, with an audit log.
+2. Test maturity leftovers: more stub signatures and inherited-method doubles.
+3. A task protocol for whitelisted operations, only when a game needs one; read
+   decision 0004 first. Do not build it speculatively.
