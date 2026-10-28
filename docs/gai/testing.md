@@ -33,6 +33,27 @@ game/tests/
   fixtures/          optional scripts used only by tests
 ```
 
+## Scene tests
+
+A project that already has test scenes can run them without converting them to
+the `test_*` harness:
+
+```sh
+bin/gai test --scene-dir res://tests
+bin/gai test --scene-dir res://tests --filter p0 --scene-timeout 60
+bin/gai test --scene-dir res://tests --scene-frames 30
+```
+
+Each `.tscn` under the directory runs in its own engine process. A test scene
+passes when it exits 0 and prints no `ERROR:` or `SCRIPT ERROR:` line. A
+non-zero exit, an engine error, or a timeout is a failure. The report goes to
+`.gai/logs/scene-test.xml` and the log to `.gai/logs/scene-test.log`.
+
+- `--scene-timeout` bounds one scene (default 120 seconds).
+- `--scene-frames N` adds `--quit-after N`; 0 lets the scene quit itself.
+- `--filter` matches the scene path.
+- This mode is separate from the `game/tests` harness and from `--isolate`.
+
 ## Write a test
 
 ```gdscript

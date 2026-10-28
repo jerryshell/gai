@@ -148,6 +148,38 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
 
     @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_autoloads(self):
+        game = self.tmp / "game"
+        (game / "autoloads").mkdir()
+        (game / "autoloads" / "probe.gd").write_text(
+            "extends Node\n\n\nfunc ping() -> String:\n\treturn \"pong\"\n",
+            encoding="utf-8",
+        )
+        with (game / "project.godot").open("a", encoding="utf-8") as handle:
+            handle.write('\n[autoload]\nProbe="*res://autoloads/probe.gd"\n')
+
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+
+        def call(method, params=None):
+            result = self.run_gai("agent", "call", method, json.dumps(params or {}))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
+        autoloads = call("api.autoloads")["autoloads"]
+        probe = next(item for item in autoloads if item["name"] == "Probe")
+        self.assertEqual(probe["path"], "res://autoloads/probe.gd")
+        self.assertIn("handle", probe)
+
+        info = call("object.autoload", {"name": "Probe"})
+        self.assertEqual(info["class"], "Node")
+        self.assertEqual(info["path"], "/root/Probe")
+        self.assertEqual(call("object.call", {"handle": info["handle"], "method": "ping", "args": []}), "pong")
+
+        stop = self.run_gai("agent", "stop")
+        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
     def test_batch_requests(self):
         start = self.run_gai("agent", "start")
         self.assertEqual(start.returncode, 0, start.stdout + start.stderr)

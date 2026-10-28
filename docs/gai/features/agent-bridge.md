@@ -44,13 +44,20 @@ everything else.
 | Namespace | Methods | What it reaches |
 | --- | --- | --- |
 | `classdb` | `classes`, `class`, `instantiate` | Every class, its properties, methods, signals, constants, and enums. |
-| `object` | `get`, `set`, `call`, `properties`, `methods`, `signals`, `singleton`, `free` | Any live object, any property, any method, any signal list. |
-| `api` | `methods`, `singletons` | The bridge surface and the engine singleton registry. |
+| `object` | `get`, `set`, `call`, `properties`, `methods`, `signals`, `singleton`, `autoload`, `free` | Any live object, any property, any method, any signal list. |
+| `api` | `methods`, `singletons`, `autoloads` | The bridge surface, the engine singleton registry, and project autoloads. |
 
 `object.singleton` reaches `Engine`, `OS`, `ProjectSettings`, `Input`,
 `PhysicsServer2D`, `PhysicsServer3D`, `RenderingServer`, `AudioServer`,
 `NavigationServer2D`, `NavigationServer3D`, `EditorInterface`, and every other
 registered singleton. `api.singletons` returns a handle for each.
+
+Project autoloads are not engine singletons. `api.autoloads` lists them with
+`name`, `path`, `singleton`, and a `handle` when the node exists.
+`object.autoload` with `{"name": "Global"}` returns the autoload node. The
+`singleton` field is true when `project.godot` marks it with `*`; it does not
+mean the engine singleton registry. In editor mode an autoload may not be
+instantiated, so it can have no handle.
 
 This is the completeness path for native classes: if `ClassDB` knows it, the
 agent can discover and call it. GDScript `class_name` classes are not in
@@ -159,6 +166,8 @@ A line can be a JSON-RPC array. Every element carries its own token and its own
 ```sh
 bin/gai agent start
 bin/gai agent methods
+bin/gai agent call api.autoloads '{}'
+bin/gai agent call object.autoload '{"name":"Global"}'
 bin/gai agent call classdb.classes '{}'
 bin/gai agent call classdb.class '{"name":"Node2D"}'
 bin/gai agent call object.singleton '{"name":"PhysicsServer3D"}'
@@ -195,10 +204,10 @@ status to stderr. `--count N` stops after N events.
 python3 tests/test_agent.py
 ```
 
-Seven tests: scene get/set and auth, capability surface, editor mode, concurrent
-start, foreign PID safety, multi-client event delivery, and batch requests. They
-need a source build. The `engine` CI job builds the engine and runs them. A local
-run needs a binary built from the current HEAD.
+Nine tests: scene get/set and auth, capability surface, autoloads, editor mode,
+concurrent start, foreign PID safety, multi-client event delivery, event replay,
+and batch requests. They need a source build. The `engine` CI job builds the
+engine and runs them. A local run needs a binary built from the current HEAD.
 
 ## Not yet
 

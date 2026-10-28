@@ -71,6 +71,7 @@ GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("ping", callable_mp(this, &GaiAgentServer::_rpc_ping));
 	rpc.set_method("api.methods", callable_mp(this, &GaiAgentServer::_rpc_api_methods));
 	rpc.set_method("api.singletons", callable_mp(this, &GaiAgentServer::_rpc_api_singletons));
+	rpc.set_method("api.autoloads", callable_mp(this, &GaiAgentServer::_rpc_api_autoloads));
 	rpc.set_method("classdb.classes", callable_mp(this, &GaiAgentServer::_rpc_classdb_classes));
 	rpc.set_method("classdb.class", callable_mp(this, &GaiAgentServer::_rpc_classdb_class));
 	rpc.set_method("classdb.instantiate", callable_mp(this, &GaiAgentServer::_rpc_classdb_instantiate));
@@ -81,6 +82,7 @@ GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("object.methods", callable_mp(this, &GaiAgentServer::_rpc_object_methods));
 	rpc.set_method("object.signals", callable_mp(this, &GaiAgentServer::_rpc_object_signals));
 	rpc.set_method("object.singleton", callable_mp(this, &GaiAgentServer::_rpc_object_singleton));
+	rpc.set_method("object.autoload", callable_mp(this, &GaiAgentServer::_rpc_object_autoload));
 	rpc.set_method("object.free", callable_mp(this, &GaiAgentServer::_rpc_object_free));
 	rpc.set_method("scene.tree", callable_mp(this, &GaiAgentServer::_rpc_scene_tree));
 	rpc.set_method("scene.current", callable_mp(this, &GaiAgentServer::_rpc_scene_current));

@@ -27,8 +27,19 @@ bin/gai build
 `--force` rebuilds even when it is current. `--dry-run` prints the SCons command.
 `--jobs N` overrides the memory-aware default. The command keeps the platform
 flags in one place; on Linux with `lld` installed it adds `linker=lld` and
-`accesskit=no`. A build removes `game/.godot`; run `bin/gai check` to import
-again.
+`accesskit=no`. A build keeps `game/.godot`. Pass `--clean-import` after an
+engine or import-format change to make `check` import again.
+
+Export templates:
+
+```sh
+bin/gai build --target template_release --jobs 2
+bin/gai build --target template_release --platform windows --mingw --jobs 2
+```
+
+`--check`, `--force`, and `--dry-run` work with a target. A Windows template on
+Linux needs MinGW. `--target template_debug` is also accepted. The output lands
+in `bin/` next to the editor binary.
 
 To run SCons yourself:
 

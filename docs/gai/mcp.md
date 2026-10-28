@@ -59,8 +59,9 @@ For a game outside this clone, set `GAI_GAME` in the client environment.
 | `gai_subscribe` | Subscribes to a bridge signal by `path` or `handle`; `since` replays history. |
 | `gai_unsubscribe` | Removes a subscription by id. |
 
-`gai_call` example: `{"method": "object.call", "params": {"handle": "...",
-"method": "get_class", "args": []}}`.
+`gai_call` example: `{"method": "api.autoloads", "params": {}}` discovers
+project autoloads; then `{"method": "object.autoload", "params": {"name":
+"Global"}}` returns one. Any bridge method works, including `object.call`.
 
 `gai_test` and `gai_check` start a separate `bin/gai` process. They do not run
 inside the game. Use `--command-timeout` to raise their limit (default 300

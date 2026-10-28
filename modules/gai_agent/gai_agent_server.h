@@ -74,6 +74,7 @@ class GaiAgentServer : public Object {
 	Variant _rpc_ping(const Variant &p_params);
 	Variant _rpc_api_methods(const Variant &p_params);
 	Variant _rpc_api_singletons(const Variant &p_params);
+	Variant _rpc_api_autoloads(const Variant &p_params);
 	Variant _rpc_classdb_classes(const Variant &p_params);
 	Variant _rpc_classdb_class(const Variant &p_params);
 	Variant _rpc_classdb_instantiate(const Variant &p_params);
@@ -84,6 +85,7 @@ class GaiAgentServer : public Object {
 	Variant _rpc_object_methods(const Variant &p_params);
 	Variant _rpc_object_signals(const Variant &p_params);
 	Variant _rpc_object_singleton(const Variant &p_params);
+	Variant _rpc_object_autoload(const Variant &p_params);
 	Variant _rpc_object_free(const Variant &p_params);
 	Variant _rpc_scene_tree(const Variant &p_params);
 	Variant _rpc_scene_current(const Variant &p_params);

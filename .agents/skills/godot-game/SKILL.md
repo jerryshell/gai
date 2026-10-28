@@ -140,6 +140,7 @@ func test_jump_emits_signal() -> void:
   A `Node` double needs `auto_free`. Use `double_scene("res://player.tscn")`
   when the test needs the scene's child nodes.
 - `bin/gai test --isolate-tests --file-timeout 30` bounds one hung test.
+- `bin/gai test --scene-dir res://tests` runs existing `.tscn` test scenes.
 - Do not override `_gai_*` methods. Read `docs/gai/testing.md`.
 
 ## Do not

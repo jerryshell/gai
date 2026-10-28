@@ -43,7 +43,37 @@ class BuildTest(unittest.TestCase):
     def test_no_engine(self):
         result = self.run_gai("build", "--check")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("no engine", result.stdout)
+        self.assertIn("no editor binary", result.stdout)
+
+    def test_template_dry_run(self):
+        result = self.run_gai(
+            "build",
+            "--dry-run",
+            "--jobs",
+            "2",
+            "--target",
+            "template_release",
+            "--platform",
+            "windows",
+            "--mingw",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("target=template_release", result.stdout)
+        self.assertIn("platform=windows", result.stdout)
+        self.assertIn("use_mingw=yes", result.stdout)
+
+    def test_template_check(self):
+        result = self.run_gai("build", "--check", "--target", "template_release")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("no template_release binary", result.stdout)
+
+        template = self.tmp / "bin" / "godot.linuxbsd.template_release.x86_64"
+        template.write_text("", encoding="utf-8")
+        now = time.time()
+        os.utime(template, (now, now))
+        result = self.run_gai("build", "--check", "--target", "template_release")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("up to date", result.stdout)
 
     def test_detects_newer_source_and_current_binary(self):
         now = time.time()

@@ -209,6 +209,7 @@ Variant GaiAgentServer::_rpc_api_methods(const Variant &p_params) {
 		"ping",
 		"api.methods",
 		"api.singletons",
+		"api.autoloads",
 		"classdb.classes",
 		"classdb.class",
 		"classdb.instantiate",
@@ -219,6 +220,7 @@ Variant GaiAgentServer::_rpc_api_methods(const Variant &p_params) {
 		"object.methods",
 		"object.signals",
 		"object.singleton",
+		"object.autoload",
 		"object.free",
 		"scene.tree",
 		"scene.current",
@@ -275,6 +277,31 @@ Variant GaiAgentServer::_rpc_api_singletons(const Variant &p_params) {
 	}
 	Dictionary result;
 	result["singletons"] = out;
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_api_autoloads(const Variant &p_params) {
+	(void)p_params;
+	Array out;
+	Node *root = tree != nullptr ? tree->get_root() : nullptr;
+	const HashMap<StringName, ProjectSettings::AutoloadInfo> &autoloads =
+			ProjectSettings::get_singleton()->get_autoload_list();
+	for (const KeyValue<StringName, ProjectSettings::AutoloadInfo> &entry : autoloads) {
+		Dictionary item;
+		item["name"] = String(entry.key);
+		item["path"] = entry.value.path;
+		item["singleton"] = entry.value.is_singleton;
+		if (root != nullptr) {
+			Node *node = root->get_node_or_null(NodePath(String(entry.key)));
+			if (node != nullptr) {
+				item["handle"] = _handle(node);
+				item["class"] = node->get_class();
+			}
+		}
+		out.push_back(item);
+	}
+	Dictionary result;
+	result["autoloads"] = out;
 	return result;
 }
 
@@ -385,6 +412,25 @@ Variant GaiAgentServer::_rpc_object_singleton(const Variant &p_params) {
 		return _error("unknown singleton: " + name);
 	}
 	return _object_info(object);
+}
+
+Variant GaiAgentServer::_rpc_object_autoload(const Variant &p_params) {
+	if (p_params.get_type() != Variant::DICTIONARY) {
+		return _error("params must be an object");
+	}
+	const Dictionary params = p_params;
+	const String name = params.get("name", "");
+	if (name.is_empty()) {
+		return _error("name is required");
+	}
+	if (tree == nullptr || tree->get_root() == nullptr) {
+		return _error("no scene tree");
+	}
+	Node *node = tree->get_root()->get_node_or_null(NodePath(name));
+	if (node == nullptr) {
+		return _error("unknown autoload: " + name);
+	}
+	return _object_info(node);
 }
 
 Variant GaiAgentServer::_rpc_object_get(const Variant &p_params) {

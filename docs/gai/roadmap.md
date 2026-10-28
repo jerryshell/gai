@@ -26,6 +26,8 @@ releases.
 - MCP event forwarding over a persistent bridge connection, with MCP logging
   notifications.
 - Docs: `testing.md`, `mcp.md`, feature docs, AGENTS, skill.
+- Scene-test discovery with JUnit, native Windows/Linux export with preflight and
+  checksums, template builds, external-game `init`, and bridge autoload discovery.
 
 ## P0: close the agent protocol
 
@@ -132,6 +134,6 @@ engine source.
 ## Next three tasks
 
 1. Multi-agent roles: read-only, write, and admin sessions, with an audit log.
-2. Test maturity leftovers: more stub signatures and inherited-method doubles.
-3. A task protocol for whitelisted operations, only when a game needs one; read
-   decision 0004 first. Do not build it speculatively.
+2. Dogfood the new path on nova-survivors-gai: scene tests in CI, native export,
+   and template rebuild after engine changes.
+3. Test maturity leftovers: more stub signatures and inherited-method doubles.

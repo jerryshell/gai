@@ -41,16 +41,18 @@ Run these from the repository root.
 | Command | What it does |
 | --- | --- |
 | `bin/gai bootstrap` | Builds the gai engine when it is missing or stale, then checks the game. Use this on the first run. |
-| `bin/gai build` | Builds the gai engine from source. `--check` tests freshness; `--force` rebuilds; `--dry-run` prints the command. |
+| `bin/gai build` | Builds the gai engine. `--target template_release` builds an export template; `--platform` and `--mingw` cross-compile; `--clean-import` resets the game import cache. |
 | `bin/gai doctor` | Checks the engine, the game, features, and the upstream base. |
 | `bin/gai check` | Imports assets, parses every `.gd` file, runs the main scene and `game/tests`, and fails on errors. |
-| `bin/gai test` | Runs `game/tests` headlessly. `check` runs it by default; `--no-tests` skips it. |
+| `bin/gai test` | Runs `game/tests` headlessly. `--scene-dir res://tests` runs existing `.tscn` test scenes. `check` runs the harness by default. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
 | `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. |
 | `bin/gai agent watch` | Streams signal events from the bridge; pass `--path` or `--handle` and `--signal`. |
 | `bin/gai mcp` | Serves the running bridge over MCP stdio. Add `--start` to start the game. |
 | `bin/gai export web` | Exports a web build. Needs a `Web` preset and export templates. |
+| `bin/gai export windows` / `linux` | Exports a native build with preflight, Steam runtime copy, archive, and checksums. |
+| `bin/gai init` | Adds AGENTS, docs, MCP config, and a test harness or scene-test guidance to a game. |
 | `bin/gai steam status` | Shows the Steam module, the SDK, and the runtime library. |
 | `bin/gai engine install` | Downloads the official fallback engine into `.gai/bin/`. It has no gai features. |
 | `bin/gai upstream check` | Warns when an engine change has no feature owner; `--strict` fails. |
@@ -168,7 +170,7 @@ exit code by itself. `bin/gai check` scans the output and fails for you.
 ## Verification
 
 - `bin/gai check` is the game gate. A clean run prints `check: ok`.
-- `bin/gai check` runs `game/tests` when the runner exists. `bin/gai test --filter <name>` runs one area while you iterate. Read `docs/gai/testing.md`.
+- `bin/gai check` runs `game/tests` when the runner exists. `bin/gai test --filter <name>` runs one area while you iterate. `bin/gai test --scene-dir res://tests` runs scene tests. Read `docs/gai/testing.md`.
 - You cannot see the game window. Never claim that a scene looks right. Say what you changed and what the check proves.
 - For logic that is hard to observe, add a test that asserts the behavior. Use a temporary `print()` only when a test is not practical.
 - Do not hide a failing check. Report it with the first error from the log.

@@ -73,6 +73,8 @@ WORKSPACE_FILES = (
     "README.md",
     "tests/test_agent.py",
     "tests/test_build.py",
+    "tests/test_export.py",
+    "tests/test_init.py",
     "tests/test_check.py",
     "tests/test_game_tests.py",
     "tests/test_mcp.py",
@@ -159,6 +161,29 @@ def built_engine():
         and ".console." not in path.name
         and not path.name.endswith(".debug")
     ]
+    if not found:
+        return None
+    found.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return found[0]
+
+
+def built_template(target: str = "template_release", platform_name=None):
+    bin_path = ROOT / "bin"
+    if not bin_path.is_dir():
+        return None
+    found = []
+    for path in bin_path.iterdir():
+        if not path.is_file() or not path.name.startswith("godot."):
+            continue
+        if f".{target}." not in path.name or ".console." in path.name:
+            continue
+        if path.name.endswith(".debug"):
+            continue
+        if platform_name and platform_name != "host":
+            flag = "linuxbsd" if platform_name == "linuxbsd" else platform_name
+            if f".{flag}." not in path.name:
+                continue
+        found.append(path)
     if not found:
         return None
     found.sort(key=lambda path: path.stat().st_mtime, reverse=True)
@@ -644,6 +669,8 @@ ENGINE_SKIP_DIRS = {"bin", "game", "docs", "tests", "build", "node_modules", "__
 
 
 def _is_engine_source(path: Path) -> bool:
+    if ".gen." in path.name or path.name.endswith(".gen"):
+        return False
     if path.name in ENGINE_BUILD_NAMES or path.name.endswith("_builders.py"):
         return True
     return path.suffix in ENGINE_SOURCE_SUFFIXES
@@ -679,20 +706,35 @@ def build_is_stale(engine):
     return newest[1] > engine.stat().st_mtime, newest
 
 
-def build_engine_command(jobs=None):
+def build_engine_command(jobs=None, target: str = "editor", platform_name=None, mingw: bool = False):
     system = platform.system()
-    command = ["scons"]
-    if system == "Linux":
-        command += ["platform=linuxbsd", "target=editor", "dev_build=no", "accesskit=no"]
+    if platform_name is None or platform_name == "host":
+        if system == "Linux":
+            platform_flag = "linuxbsd"
+        elif system == "Darwin":
+            platform_flag = "macos"
+        elif system == "Windows":
+            platform_flag = "windows"
+        else:
+            die(f"no build recipe for {system}. Read `docs/gai/build.md`.")
+    else:
+        platform_flag = platform_name
+    if platform_flag not in ("linuxbsd", "windows", "macos"):
+        die(f"unknown platform: {platform_flag}. Use linuxbsd, windows, or macos.")
+    command = ["scons", f"platform={platform_flag}", f"target={target}"]
+    command.append("dev_build=no")
+    if platform_flag == "linuxbsd":
+        command.append("accesskit=no")
         if shutil.which("ld.lld"):
             command.append("linker=lld")
-    elif system == "Darwin":
-        command += ["platform=macos", "target=editor", "dev_build=no"]
-    elif system == "Windows":
-        command += ["platform=windows", "target=editor", "dev_build=no"]
-    else:
-        die(f"no build recipe for {system}. Read `docs/gai/build.md`.")
-    command.append(f"-j{build_jobs()}")
+    if platform_flag == "windows":
+        if mingw:
+            command += ["use_mingw=yes", "d3d12=no", "winrt=no", "accesskit=no", "angle=no"]
+        else:
+            command += ["accesskit=no"]
+    if platform_flag == "macos" and mingw:
+        die("--mingw applies to the Windows platform only.")
+    command.append(f"-j{max(1, int(jobs)) if jobs is not None else build_jobs()}")
     return command
 
 
@@ -700,11 +742,21 @@ def cmd_build(args) -> int:
     if args.jobs is not None and args.jobs < 1:
         print("gai: --jobs must be at least 1", file=sys.stderr)
         return 2
-    engine = built_engine()
+    target = getattr(args, "target", "editor")
+    platform_name = getattr(args, "platform", "host")
+    mingw = getattr(args, "mingw", False)
+    if mingw and platform_name != "windows":
+        print("gai: --mingw needs --platform windows", file=sys.stderr)
+        return 2
+    editor_target = target == "editor"
+    if editor_target:
+        engine = built_engine()
+    else:
+        engine = built_template(target, platform_name)
     stale, newest = build_is_stale(engine)
     if args.check:
         if engine is None:
-            print("build: no engine")
+            print(f"build: no {target} binary")
             return 1
         if stale:
             source = show_path(newest[0]) if newest else "unknown"
@@ -713,7 +765,7 @@ def cmd_build(args) -> int:
         print("build: up to date")
         return 0
 
-    command = build_engine_command(args.jobs)
+    command = build_engine_command(args.jobs, target, platform_name, mingw)
     if args.dry_run:
         print(" ".join(str(part) for part in command))
         return 0
@@ -725,6 +777,10 @@ def cmd_build(args) -> int:
             "SCons is not installed. Install SCons and the platform build "
             "dependencies from `docs/gai/build.md`."
         )
+    if mingw and shutil.which("x86_64-w64-mingw32-g++") is None:
+        die("MinGW is missing. Install mingw-w64, then run the build again.")
+    if not steam_sdk_ready():
+        print("gai: Steam is not in this build. Run `bin/gai steam sdk --download` for a Steam build.", flush=True)
     if newest is not None:
         print(f"build: newer source {show_path(newest[0])}", flush=True)
     print("build: " + " ".join(str(part) for part in command), flush=True)
@@ -734,8 +790,12 @@ def cmd_build(args) -> int:
     if result.returncode != 0:
         print(f"build: failed after {time.time() - started:.1f}s")
         return 1
-    shutil.rmtree(GAME_DIR / ".godot", ignore_errors=True)
-    engine = built_engine()
+    if editor_target and getattr(args, "clean_import", False):
+        shutil.rmtree(GAME_DIR / ".godot", ignore_errors=True)
+    if editor_target:
+        engine = built_engine()
+    else:
+        engine = built_template(target, platform_name)
     if engine is not None:
         # SCons uses content signatures; a no-op source rewrite leaves the
         # binary older than the source and looks stale to a mtime check.
@@ -777,6 +837,10 @@ def cmd_bootstrap(args) -> int:
                         check=False,
                         dry_run=False,
                         jobs=None,
+                        target="editor",
+                        platform="host",
+                        mingw=False,
+                        clean_import=False,
                     )
                 )
                 if result != 0:
@@ -1003,6 +1067,146 @@ def remove_script_checker() -> None:
         pass
 
 
+def ensure_game_import(engine, timeout: float, quiet: bool = False) -> bool:
+    if (GAME_DIR / ".godot").is_dir():
+        return True
+    if not quiet:
+        print("test: first import", flush=True)
+    try:
+        run(
+            [engine, "--headless", "--path", GAME_DIR, "--import"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        if not quiet:
+            print(f"test: import timed out after {timeout}s")
+        return False
+    return True
+
+
+def discover_scene_tests(directories: list[str]) -> list[str]:
+    found: list[str] = []
+    for directory in directories:
+        root = GAME_DIR / directory.removeprefix("res://")
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.tscn"):
+            relative = path.relative_to(GAME_DIR)
+            if any(part.startswith(".") for part in relative.parts):
+                continue
+            scene = "res://" + relative.as_posix()
+            if scene not in found:
+                found.append(scene)
+    return sorted(found)
+
+
+def cmd_test_scene(engine, args, log_path: Path, junit_path: Path) -> int:
+    missing = [directory for directory in args.scene_dir if not (GAME_DIR / directory.removeprefix("res://")).is_dir()]
+    if missing:
+        for directory in missing:
+            print(f"test: no directory {directory}", file=sys.stderr)
+        return 1
+    if not ensure_game_import(engine, args.timeout, quiet=args.json):
+        if args.json:
+            print(json.dumps({"error": "import timeout"}))
+        return 1
+
+    scenes = discover_scene_tests(args.scene_dir)
+    if args.filter:
+        needle = args.filter.lower()
+        scenes = [scene for scene in scenes if needle in scene.lower()]
+
+    summary = {
+        "version": 1,
+        "scene_tests": True,
+        "dirs": args.scene_dir,
+        "filter": args.filter,
+        "files": len(scenes),
+        "tests": 0,
+        "passed": 0,
+        "failed": 0,
+        "pending": 0,
+        "duration_ms": 0,
+        "results": [],
+    }
+    outputs: list[str] = []
+    for scene in scenes:
+        started = time.time()
+        argv = [engine, "--headless", "--path", GAME_DIR]
+        if args.scene_frames > 0:
+            argv.extend(["--quit-after", str(args.scene_frames)])
+        argv.append(scene)
+        text = ""
+        returncode = None
+        timed_out = False
+        try:
+            result = run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=args.scene_timeout,
+            )
+            text = result.stdout or ""
+            returncode = result.returncode
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.output or ""
+            text = partial.decode("utf-8", errors="replace") if isinstance(partial, bytes) else partial
+            timed_out = True
+        outputs.append(text)
+        if args.verbose:
+            print(text.rstrip())
+
+        errors = collect_errors(text)
+        failures: list[str] = []
+        if timed_out:
+            failures.append(f"timed out after {args.scene_timeout}s")
+        elif returncode != 0:
+            failures.append(f"engine exited with code {returncode}")
+        failures.extend(errors)
+        status = "fail" if failures else "pass"
+        duration = int((time.time() - started) * 1000)
+        item = {
+            "file": scene,
+            "name": Path(scene).stem,
+            "status": status,
+            "failures": failures,
+            "pending": "",
+            "duration_ms": duration,
+        }
+        summary["results"].append(item)
+        summary["tests"] += 1
+        summary["passed" if status == "pass" else "failed"] += 1
+        summary["duration_ms"] += duration
+        if not args.json:
+            print(f"{status.upper()} scene:{scene} ({duration} ms)")
+            for failure in failures:
+                print("  " + failure)
+
+    log_path.write_text("".join(outputs), encoding="utf-8")
+    write_test_junit(summary, junit_path)
+    failed = summary["failed"] > 0
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False))
+        return 1 if failed else 0
+    if not scenes:
+        if args.filter:
+            print(f"scenes: no scenes matched `{args.filter}`")
+        else:
+            print("scenes: no scenes in " + ", ".join(args.scene_dir))
+        return 1 if args.filter else 0
+    print(
+        "scenes: %d passed, %d failed (%d ms)"
+        % (summary["passed"], summary["failed"], summary["duration_ms"])
+    )
+    print(f"log: {show_path(log_path)}")
+    print(f"junit: {show_path(junit_path)}")
+    return 1 if failed else 0
+
+
 def cmd_test_isolate(engine, args, log_path: Path, junit_path: Path, per_test: bool = False) -> int:
     if args.file_timeout <= 0:
         print("gai: --file-timeout must be positive", file=sys.stderr)
@@ -1194,6 +1398,17 @@ def cmd_test_isolate(engine, args, log_path: Path, junit_path: Path, per_test: b
 def cmd_test(args) -> int:
     engine = require_engine()
     require_game()
+    if args.scene_dir:
+        if args.isolate or args.isolate_tests:
+            print("test: --scene-dir cannot be combined with --isolate", file=sys.stderr)
+            return 2
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        return cmd_test_scene(
+            engine,
+            args,
+            LOG_DIR / "scene-test.log",
+            LOG_DIR / "scene-test.xml",
+        )
     test_dir = args.dir
     if not test_dir.startswith("res://"):
         print("gai: --dir must start with res://", file=sys.stderr)
@@ -1228,23 +1443,10 @@ def cmd_test(args) -> int:
     junit_path = LOG_DIR / "test.xml"
     junit_path.unlink(missing_ok=True)
 
-    if not (GAME_DIR / ".godot").is_dir():
-        if not args.json:
-            print("test: first import", flush=True)
-        try:
-            run(
-                [engine, "--headless", "--path", GAME_DIR, "--import"],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=args.timeout,
-            )
-        except subprocess.TimeoutExpired:
-            if args.json:
-                print(json.dumps({"error": "import timeout"}))
-            else:
-                print(f"test: import timed out after {args.timeout}s")
-            return 1
+    if not ensure_game_import(engine, args.timeout, quiet=args.json):
+        if args.json:
+            print(json.dumps({"error": "import timeout"}))
+        return 1
 
     if args.isolate or args.isolate_tests:
         return cmd_test_isolate(
@@ -2428,6 +2630,330 @@ def engine_template_version(engine) -> str:
     return version.split(".custom_build", 1)[0]
 
 
+def project_name() -> str:
+    project = GAME_DIR / "project.godot"
+    try:
+        text = project.read_text(encoding="utf-8")
+    except OSError:
+        return "game"
+    match = re.search(r'^config/name="([^"]+)"', text, re.MULTILINE)
+    name = match.group(1) if match else "game"
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
+    return name or "game"
+
+
+def export_presets() -> dict:
+    path = GAME_DIR / "export_presets.cfg"
+    if not path.is_file():
+        return {}
+    sections: dict[str, dict[str, str]] = {}
+    current = ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current = stripped[1:-1]
+            sections.setdefault(current, {})
+            continue
+        if not current or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1]
+        sections[current].setdefault(key, value)
+    presets = {}
+    for section, values in sections.items():
+        if not section.startswith("preset.") or section.endswith(".options"):
+            continue
+        name = values.get("name", "")
+        if not name:
+            continue
+        options = sections.get(f"{section}.options", {})
+        presets[name] = {
+            "template": options.get("custom_template/release", ""),
+            "export_path": values.get("export_path", ""),
+            "options": f"{section}.options",
+        }
+    return presets
+
+
+def steam_runtime_for(target: str):
+    if target == "windows":
+        folder, name = "win64", "steam_api64.dll"
+    elif target == "linux":
+        folder, name = "linux64", "libsteam_api.so"
+    elif target == "macos":
+        folder, name = "osx", "libsteam_api.dylib"
+    else:
+        return None
+    path = STEAM_SDK / "redistributable_bin" / folder / name
+    return path if path.is_file() else None
+
+
+def write_sha256sums(paths, destination: Path) -> Path:
+    lines = []
+    for path in sorted(paths):
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        lines.append(f"{digest.hexdigest()}  {path.name}")
+    destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return destination
+
+
+def make_archive(paths, archive: Path) -> Path:
+    archive = archive.expanduser()
+    suffix = archive.name.lower()
+    if suffix.endswith(".zip"):
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for path in paths:
+                bundle.write(path, path.name)
+        return archive
+    if suffix.endswith(".tar.gz") or suffix.endswith(".tgz"):
+        with tarfile.open(archive, "w:gz") as bundle:
+            for path in paths:
+                bundle.add(path, arcname=path.name)
+        return archive
+    raise ValueError("archive must end with .zip, .tar.gz, or .tgz")
+
+
+def init_write(path: Path, content: str, force: bool) -> bool:
+    if path.exists() and not force:
+        print(f"init: keep {path}")
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    print(f"init: wrote {path}")
+    return True
+
+
+def init_agents_text(target: Path, scene_tests: bool) -> str:
+    gai = (ROOT / "bin" / "gai").resolve()
+    test_command = (
+        f"GAI_GAME={target} {gai} test --scene-dir res://tests"
+        if scene_tests
+        else f"GAI_GAME={target} {gai} test"
+    )
+    return f"""# {target.name} agent guide
+
+This project is a Godot game. Use gai to check it, test it, run it, and inspect
+a live scene.
+
+## Commands
+
+```sh
+GAI_GAME={target} {gai} check
+{test_command}
+GAI_GAME={target} {gai} run -- --headless --quit-after 60
+GAI_GAME={target} {gai} editor
+```
+
+Live scene:
+
+```sh
+GAI_GAME={target} {gai} agent start
+GAI_GAME={target} {gai} agent tree
+GAI_GAME={target} {gai} agent call api.autoloads '{{}}'
+GAI_GAME={target} {gai} agent stop
+```
+
+MCP: `.gai/mcp.json` starts `{gai} mcp --start` for this project.
+
+## Rules
+
+- Read `project.godot` before changing scenes or input actions.
+- Keep `res://` paths in the project. Do not use absolute paths in game files.
+- Run `bin/gai check` after every scene or script change.
+- Add a test in `tests/` when behavior is not visible from a run.
+- Do not edit `.godot/`; it is an import cache.
+- Do not claim that a scene looks right. Say what the check proves.
+
+## Tests
+
+{"This project uses scene tests: `bin/gai test --scene-dir res://tests`." if scene_tests else "The harness lives in `tests/run_tests.gd`. A test extends `res://tests/gai_test_case.gd`."}
+
+See `{ROOT / "docs" / "gai" / "testing.md"}` for the harness and scene mode.
+"""
+
+
+def cmd_init(args) -> int:
+    target = Path(args.path).expanduser().resolve() if args.path else GAME_DIR.resolve()
+    if not (target / "project.godot").is_file():
+        print(f"gai: {target} is not a Godot project (project.godot is missing)", file=sys.stderr)
+        return 1
+    tests = target / "tests"
+    existing_tests = any(
+        path.suffix in (".gd", ".tscn") for path in tests.rglob("*") if path.is_file()
+    ) if tests.is_dir() else False
+    scene_tests = existing_tests and not (tests / "run_tests.gd").is_file()
+
+    init_write(target / "AGENTS.md", init_agents_text(target, scene_tests), args.force)
+    init_write(
+        target / "docs" / "gai.md",
+        f"# gai\n\nThis project uses gai from `{ROOT}`.\n\n"
+        "Run `bin/gai check` for the game gate. Read "
+        f"`{ROOT / 'docs' / 'gai' / 'testing.md'}` for tests.\n",
+        args.force,
+    )
+
+    if scene_tests:
+        print("init: existing scene tests found; the GDScript harness is not installed")
+    else:
+        for name in ("gai_test_case.gd", "run_tests.gd"):
+            source = ROOT / "game" / "tests" / name
+            if source.is_file():
+                init_write(tests / name, source.read_text(encoding="utf-8"), args.force)
+        if not (tests / "test_project.gd").is_file():
+            init_write(
+                tests / "test_project.gd",
+                r'''extends "res://tests/gai_test_case.gd"
+
+
+func test_project_has_main_scene() -> void:
+	var path := String(ProjectSettings.get_setting("application/run/main_scene", ""))
+	assert_true(not path.is_empty(), "a main scene is set")
+	if path.is_empty():
+		return
+	var packed := load(path) as PackedScene
+	assert_not_null(packed, "the main scene loads")
+''',
+                args.force,
+            )
+
+    if not args.no_mcp:
+        mcp = {
+            "mcpServers": {
+                "gai": {
+                    "command": str((ROOT / "bin" / "gai").resolve()),
+                    "args": ["mcp", "--start"],
+                    "env": {"GAI_GAME": str(target)},
+                }
+            }
+        }
+        init_write(target / ".gai" / "mcp.json", json.dumps(mcp, indent=2) + "\n", args.force)
+
+    print("init: next: GAI_GAME=%s %s check" % (target, (ROOT / "bin" / "gai").resolve()))
+    return 0
+
+
+def cmd_export_native(args) -> int:
+    engine = require_engine()
+    require_game()
+    target = args.export_target
+    presets = export_presets()
+    preset_name = args.preset or args.default_preset
+    if preset_name not in presets:
+        print(f"gai: preset `{preset_name}` is not in export_presets.cfg")
+        if presets:
+            print("gai: presets: " + ", ".join(sorted(presets)))
+        return 1
+    preset = presets[preset_name]
+
+    template = preset.get("template", "")
+    if template:
+        template_path = Path(template).expanduser()
+        if not template_path.is_absolute():
+            template_path = (GAME_DIR / template_path).resolve()
+        if not template_path.is_file():
+            print(f"gai: custom template is missing: {template_path}")
+            print("gai: build it with `bin/gai build --target template_release --platform ...`.")
+            return 1
+
+    if args.output:
+        output = Path(args.output).expanduser()
+        if not output.is_absolute():
+            output = GAME_DIR / output
+    elif preset.get("export_path"):
+        output = (GAME_DIR / preset["export_path"]).resolve()
+    else:
+        extension = ".exe" if target == "windows" else ".x86_64"
+        output = GAME_DIR / "build" / target / (project_name() + extension)
+    output = output.resolve()
+
+    inside_game = output.parent != GAME_DIR and GAME_DIR in output.parents
+    if args.clean and inside_game and output.parent.is_dir():
+        shutil.rmtree(output.parent)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if inside_game:
+        (output.parent / ".gdignore").touch()
+
+    mode = "on" if args.steam_runtime else "off" if args.no_steam_runtime else "auto"
+    library = steam_runtime_for(target)
+    if mode == "on" and library is None:
+        print(f"gai: no Steam runtime library for {target}")
+        print("gai: run `bin/gai steam sdk --download` first.")
+        return 1
+
+    command = [engine, "--headless", "--path", GAME_DIR, "--export-release", preset_name, str(output)]
+    if args.dry_run:
+        print(" ".join(str(part) for part in command))
+        print(f"output {output}")
+        return 0
+    print(f"gai: exporting {preset_name} to {output}", flush=True)
+    try:
+        result = run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=args.timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"gai: export timed out after {args.timeout}s")
+        return 1
+    text = result.stdout or ""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "export.log"
+    log_path.write_text(text, encoding="utf-8")
+    if result.returncode != 0:
+        for line in text.splitlines()[-16:]:
+            print(line)
+        print(f"gai: export failed; log {show_path(log_path)}")
+        return 1
+    if not output.is_file() or output.stat().st_size == 0:
+        print(f"gai: export did not write {output}")
+        return 1
+
+    copied = []
+    if mode != "off" and library is not None:
+        destination = output.parent / library.name
+        if destination != library:
+            shutil.copy2(library, destination)
+            copied.append(destination)
+        print(f"gai: steam runtime {destination}")
+
+    paths = [output]
+    for sidecar in (output.with_suffix(".pck"), Path(str(output) + ".pck")):
+        if sidecar.is_file() and sidecar not in paths:
+            paths.append(sidecar)
+    paths.extend(copied)
+    if args.archive:
+        archive = Path(args.archive).expanduser()
+        if not archive.is_absolute():
+            archive = output.parent / archive
+        if archive.suffix == "":
+            archive = archive.with_name(archive.name + (".zip" if target == "windows" else ".tar.gz"))
+        try:
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            make_archive(paths, archive)
+        except (ValueError, OSError) as error:
+            print(f"gai: cannot write archive: {error}")
+            return 1
+        paths.append(archive)
+        print(f"gai: archive {archive}")
+
+    if args.checksum:
+        sums = write_sha256sums(paths, output.parent / "SHA256SUMS")
+        print(f"gai: checksums {sums}")
+
+    size = sum(path.stat().st_size for path in paths)
+    print(f"gai: exported {output.name}, {size / (1024 * 1024):.1f} MiB")
+    print(f"gai: log {show_path(log_path)}")
+    return 0
+
+
 def cmd_export_web(args) -> int:
     engine = require_engine()
     require_game()
@@ -2598,7 +3124,35 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--check", action="store_true", help="exit 1 when a rebuild is needed")
     build.add_argument("--dry-run", action="store_true", help="print the build command")
     build.add_argument("--jobs", type=int, default=None, help="SCons jobs (default: memory-aware)")
+    build.add_argument(
+        "--target",
+        choices=("editor", "template_release", "template_debug"),
+        default="editor",
+        help="SCons target (default: editor)",
+    )
+    build.add_argument(
+        "--platform",
+        choices=("host", "linuxbsd", "windows", "macos"),
+        default="host",
+        help="cross-compile platform (default: host)",
+    )
+    build.add_argument(
+        "--mingw",
+        action="store_true",
+        help="use MinGW for a Windows template build",
+    )
+    build.add_argument(
+        "--clean-import",
+        action="store_true",
+        help="delete the game's .godot cache after an editor build",
+    )
     build.set_defaults(func=cmd_build)
+
+    init = sub.add_parser("init", help="add gai project files to a game")
+    init.add_argument("path", nargs="?", help="game directory (default: GAI_GAME or game/)")
+    init.add_argument("--force", action="store_true", help="overwrite generated files")
+    init.add_argument("--no-mcp", action="store_true", help="do not write .gai/mcp.json")
+    init.set_defaults(func=cmd_init)
 
     check = sub.add_parser("check", help="import assets, parse scripts, run the main scene and game tests")
     check.add_argument("--frames", type=int, default=5, help="frames to run (default: 5)")
@@ -2617,6 +3171,24 @@ def build_parser() -> argparse.ArgumentParser:
     test_cmd.add_argument("--timeout", type=int, default=300, help="seconds for the test run (default: 300)")
     test_cmd.add_argument("--json", action="store_true", help="print the result as JSON")
     test_cmd.add_argument("--verbose", action="store_true", help="print the engine output")
+    test_cmd.add_argument(
+        "--scene-dir",
+        action="append",
+        default=[],
+        help="discover and run every .tscn under this res:// directory; repeatable",
+    )
+    test_cmd.add_argument(
+        "--scene-timeout",
+        type=float,
+        default=120.0,
+        help="seconds per scene with --scene-dir (default: 120)",
+    )
+    test_cmd.add_argument(
+        "--scene-frames",
+        type=int,
+        default=0,
+        help="with --scene-dir, pass --quit-after N; 0 lets the scene quit itself",
+    )
     test_cmd.add_argument(
         "--isolate",
         action="store_true",
@@ -2647,6 +3219,23 @@ def build_parser() -> argparse.ArgumentParser:
     export_web.add_argument("--gzip", action="store_true", help="write .gz files for static hosting")
     export_web.add_argument("--timeout", type=int, default=900, help="export timeout in seconds")
     export_web.set_defaults(func=cmd_export_web)
+
+    for native_target, native_default in (("windows", "Windows Desktop"), ("linux", "Linux")):
+        native = export_sub.add_parser(native_target, help=f"export a {native_target} build")
+        native.add_argument("--preset", default=native_default, help=f"export preset name (default: {native_default})")
+        native.add_argument("--output", help="output binary path; defaults to the preset export_path")
+        native.add_argument("--clean", action="store_true", help="remove the output directory first when it is inside the game")
+        native.add_argument("--timeout", type=int, default=900, help="export timeout in seconds")
+        native.add_argument("--archive", help="write a .zip or .tar.gz archive next to the output")
+        native.add_argument("--checksum", action="store_true", help="write SHA256SUMS next to the output")
+        native.add_argument("--steam-runtime", action="store_true", help="require and copy the Steam runtime")
+        native.add_argument("--no-steam-runtime", action="store_true", help="do not copy the Steam runtime")
+        native.add_argument("--dry-run", action="store_true", help="preflight and print the export command")
+        native.set_defaults(
+            func=cmd_export_native,
+            export_target=native_target,
+            default_preset=native_default,
+        )
 
     editor = sub.add_parser("editor", help="open the game in the Godot editor")
     editor.set_defaults(func=cmd_editor)

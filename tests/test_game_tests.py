@@ -125,6 +125,38 @@ class GameTestTest(unittest.TestCase):
         self.assertIn("Parse Error", result.stdout)
 
     @unittest.skipUnless(ENGINE, "no engine binary")
+    def test_scene_tests(self):
+        tests = self.tmp / "game" / "tests"
+        (tests / "scene_probe_pass.gd").write_text(
+            "extends Node\n\nfunc _ready() -> void:\n"
+            "\tprint(\"scene probe pass\")\n\tget_tree().quit(0)\n",
+            encoding="utf-8",
+        )
+        (tests / "scene_probe_fail.gd").write_text(
+            "extends Node\n\nfunc _ready() -> void:\n"
+            "\tpush_error(\"scene probe failure\")\n\tget_tree().quit(1)\n",
+            encoding="utf-8",
+        )
+        (tests / "scene_probe_pass.tscn").write_text(
+            '[gd_scene load_steps=2 format=3]\n\n'
+            '[ext_resource type="Script" path="res://tests/scene_probe_pass.gd" id="1"]\n\n'
+            '[node name="SceneProbePass" type="Node"]\nscript = ExtResource("1")\n',
+            encoding="utf-8",
+        )
+        (tests / "scene_probe_fail.tscn").write_text(
+            '[gd_scene load_steps=2 format=3]\n\n'
+            '[ext_resource type="Script" path="res://tests/scene_probe_fail.gd" id="1"]\n\n'
+            '[node name="SceneProbeFail" type="Node"]\nscript = ExtResource("1")\n',
+            encoding="utf-8",
+        )
+        result = self.run_gai("test", "--scene-dir", "res://tests", "--filter", "scene_probe")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("1 passed, 1 failed", result.stdout)
+        self.assertIn("scene probe failure", result.stdout)
+        junit = (self.tmp / ".gai" / "logs" / "scene-test.xml").read_text(encoding="utf-8")
+        self.assertIn("<failure", junit)
+
+    @unittest.skipUnless(ENGINE, "no engine binary")
     def test_isolate_passes(self):
         result = self.run_gai("test", "--isolate")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
