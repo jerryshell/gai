@@ -63,8 +63,8 @@ class FakeEventSource:
     def set_callback(self, callback):
         self.callback = callback
 
-    def subscribe(self, path=None, handle=None, signal=None):
-        self.calls.append(("subscribe", path, handle, signal))
+    def subscribe(self, path=None, handle=None, signal=None, since=None):
+        self.calls.append(("subscribe", path, handle, signal, since))
         if self.callback is not None:
             self.callback(
                 {
@@ -324,12 +324,12 @@ class McpTest(unittest.TestCase):
             [
                 self.call_tool(
                     "gai_subscribe",
-                    {"path": "/root/Main", "signal": "ready"},
+                    {"path": "/root/Main", "signal": "ready", "since": 5},
                 )
             ],
             event_source=source,
         )
-        self.assertEqual(source.calls, [("subscribe", "/root/Main", None, "ready")])
+        self.assertEqual(source.calls, [("subscribe", "/root/Main", None, "ready", 5)])
         notifications = [
             message
             for message in responses

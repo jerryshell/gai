@@ -736,6 +736,13 @@ def cmd_build(args) -> int:
         return 1
     shutil.rmtree(GAME_DIR / ".godot", ignore_errors=True)
     engine = built_engine()
+    if engine is not None:
+        # SCons uses content signatures; a no-op source rewrite leaves the
+        # binary older than the source and looks stale to a mtime check.
+        try:
+            os.utime(engine, None)
+        except OSError:
+            pass
     print(f"build: ok ({time.time() - started:.1f}s)")
     if engine is not None:
         print(f"engine: {engine}")

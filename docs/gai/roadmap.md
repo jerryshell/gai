@@ -22,22 +22,22 @@ releases.
 - `bin/gai build` with source freshness, `bootstrap` rebuild, and an engine CI
   job with an SCons cache.
 - JSON-RPC batch requests with a 10-second batch budget.
+- Event sequence numbers and an in-memory replay buffer.
 - MCP event forwarding over a persistent bridge connection, with MCP logging
   notifications.
 - Docs: `testing.md`, `mcp.md`, feature docs, AGENTS, skill.
 
 ## P0: close the agent protocol
 
-The bridge has multiple clients and events. The protocol still has gaps.
+Status: batch, per-client queues, event sequence numbers, replay, and MCP event
+forwarding are done. One limit remains.
 
-- A per-request deadline or a task id for long operations. Today one request
-  blocks all clients on the main thread.
-- Event sequence numbers and an optional replay buffer (`since`). A reconnect
-  currently loses subscriptions and events.
-- Add tests for deadlines and replay; batch and MCP notification tests exist.
-
-Done when: a slow call does not block an unrelated client. MCP event delivery
-is done.
+- A per-request deadline is not implemented. `decisions/0004` records why: the
+  bridge calls non-thread-safe engine APIs on the main thread. A deadline field
+  that cannot stop the call would mislead agents.
+- A slow call still blocks the other clients. Clients use socket timeouts.
+- The remaining acceptance test: a slow call must not block an unrelated client.
+  That needs a task protocol for safe operations, not a deadline field.
 
 ## P0: test maturity
 
@@ -124,6 +124,6 @@ engine source.
 
 ## Next three tasks
 
-1. A per-request deadline or task id; a long single request still blocks all clients.
-2. Event replay and history for reconnects.
+1. A task protocol for whitelisted, chunked long operations; read decision 0004 first.
+2. Upstream 4.8 merge rehearsal.
 3. The Autowork decision, only if native `ClassDB` assertions or E2E are needed.

@@ -18,8 +18,7 @@
 
 class GaiAgentEventCallable : public CallableCustom {
 	GaiAgentServer *server = nullptr;
-	int client_id = 0;
-	int subscription_id = 0;
+	String binding_key;
 
 	static bool _compare_equal(const CallableCustom *p_a, const CallableCustom *p_b) {
 		return p_a == p_b;
@@ -30,11 +29,11 @@ class GaiAgentEventCallable : public CallableCustom {
 	}
 
 public:
-	GaiAgentEventCallable(GaiAgentServer *p_server, int p_client_id, int p_subscription_id) :
-			server(p_server), client_id(p_client_id), subscription_id(p_subscription_id) {}
+	GaiAgentEventCallable(GaiAgentServer *p_server, const String &p_binding_key) :
+			server(p_server), binding_key(p_binding_key) {}
 
 	uint32_t hash() const override {
-		return hash_murmur3_one_32((uint32_t)client_id ^ ((uint32_t)subscription_id << 16));
+		return binding_key.hash();
 	}
 
 	String get_as_text() const override {
@@ -62,7 +61,7 @@ public:
 		for (int i = 0; i < p_argcount; i++) {
 			arguments.push_back(*p_arguments[i]);
 		}
-		server->_queue_event(client_id, subscription_id, arguments);
+		server->_queue_event(binding_key, arguments);
 		r_call_error.error = Callable::CallError::CALL_OK;
 	}
 };
@@ -186,6 +185,8 @@ constexpr int GAI_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 constexpr uint64_t GAI_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 constexpr int GAI_MAX_BATCH = 64;
 constexpr uint64_t GAI_BATCH_DEADLINE_MS = 10000;
+constexpr int GAI_MAX_EVENT_HISTORY = 512;
+constexpr int GAI_MAX_REPLAY = 128;
 }
 
 void GaiAgentServer::_drop_clients() {
@@ -220,42 +221,71 @@ void GaiAgentServer::_drop_client(Client *p_client) {
 
 void GaiAgentServer::_disconnect_subscriptions(Client *p_client) {
 	for (KeyValue<int, Subscription> &entry : p_client->subscriptions) {
-		Subscription &subscription = entry.value;
-		Object *object = ObjectDB::get_instance(subscription.object_id);
-		if (object != nullptr && subscription.callable.is_valid() && object->is_connected(subscription.signal, subscription.callable)) {
-			object->disconnect(subscription.signal, subscription.callable);
+		const String key = entry.value.binding_key;
+		SignalBinding *binding = bindings.getptr(key);
+		if (binding == nullptr) {
+			continue;
+		}
+		for (int index = binding->subscribers.size() - 1; index >= 0; index--) {
+			const EventSubscriber &subscriber = binding->subscribers[index];
+			if (subscriber.client_id == p_client->id && subscriber.subscription_id == entry.key) {
+				binding->subscribers.remove_at(index);
+			}
+		}
+		if (binding->subscribers.is_empty()) {
+			Object *object = ObjectDB::get_instance(binding->object_id);
+			if (object != nullptr && binding->callable.is_valid() && object->is_connected(binding->signal, binding->callable)) {
+				object->disconnect(binding->signal, binding->callable);
+			}
+			bindings.erase(key);
 		}
 	}
 	p_client->subscriptions.clear();
 }
 
-void GaiAgentServer::_prune_subscriptions(Client *p_client) {
-	Vector<int> removed;
-	for (const KeyValue<int, Subscription> &entry : p_client->subscriptions) {
-		if (ObjectDB::get_instance(entry.value.object_id) == nullptr) {
-			removed.push_back(entry.key);
-		}
+void GaiAgentServer::_prune_bindings() {
+	Vector<String> keys;
+	for (const KeyValue<String, SignalBinding> &entry : bindings) {
+		keys.push_back(entry.key);
 	}
-	for (int subscription_id : removed) {
-		Subscription *subscription = p_client->subscriptions.getptr(subscription_id);
-		if (subscription == nullptr) {
+	for (const String &key : keys) {
+		SignalBinding *binding = bindings.getptr(key);
+		if (binding == nullptr) {
 			continue;
 		}
-		Dictionary params;
-		params["subscription"] = subscription_id;
-		params["signal"] = String(subscription->signal);
-		params["handle"] = String::num_uint64((uint64_t)subscription->object_id);
-		params["path"] = subscription->path;
-		params["closed"] = true;
-		const int client_id = p_client->id;
-		p_client->subscriptions.erase(subscription_id);
-		Dictionary notification;
-		notification["jsonrpc"] = "2.0";
-		notification["method"] = "event";
-		notification["params"] = params;
-		_send_to(client_id, JSON::stringify(notification) + "\n");
-		if (!clients.has(client_id)) {
-			return;
+		if (ObjectDB::get_instance(binding->object_id) != nullptr) {
+			continue;
+		}
+		const ObjectID object_id = binding->object_id;
+		const StringName signal = binding->signal;
+		const String path = binding->path;
+		const Vector<EventSubscriber> subscribers = binding->subscribers;
+		bindings.erase(key);
+		for (const EventSubscriber &subscriber : subscribers) {
+			Client **found = clients.getptr(subscriber.client_id);
+			if (found == nullptr) {
+				continue;
+			}
+			Client *client = *found;
+			Subscription *subscription = client->subscriptions.getptr(subscriber.subscription_id);
+			if (subscription == nullptr) {
+				continue;
+			}
+			Dictionary params;
+			params["subscription"] = subscriber.subscription_id;
+			params["signal"] = String(signal);
+			params["handle"] = String::num_uint64((uint64_t)object_id);
+			params["path"] = path;
+			params["closed"] = true;
+			client->subscriptions.erase(subscriber.subscription_id);
+			Dictionary notification;
+			notification["jsonrpc"] = "2.0";
+			notification["method"] = "event";
+			notification["params"] = params;
+			_send_to(subscriber.client_id, JSON::stringify(notification) + "\n");
+			if (!clients.has(subscriber.client_id)) {
+				continue;
+			}
 		}
 	}
 }
@@ -293,10 +323,6 @@ void GaiAgentServer::_poll_client(Client *p_client, uint64_t p_now) {
 		_drop_client(p_client);
 		return;
 	}
-	_prune_subscriptions(p_client);
-	if (!clients.has(client_id)) {
-		return;
-	}
 	_flush_client(p_client);
 	if (!clients.has(client_id)) {
 		return;
@@ -321,6 +347,7 @@ void GaiAgentServer::poll() {
 	}
 	const uint64_t now = OS::get_singleton()->get_ticks_msec();
 	_accept_client(now);
+	_prune_bindings();
 	Vector<int> ids;
 	for (const KeyValue<int, Client *> &entry : clients) {
 		ids.push_back(entry.key);
@@ -520,44 +547,57 @@ void GaiAgentServer::_send_to(int p_client_id, const String &p_payload) {
 	}
 }
 
-void GaiAgentServer::_queue_event(int p_client_id, int p_subscription, const Array &p_args) {
-	Client **found = clients.getptr(p_client_id);
-	if (found == nullptr) {
+void GaiAgentServer::_queue_event(const String &p_binding_key, const Array &p_args) {
+	SignalBinding *binding = bindings.getptr(p_binding_key);
+	if (binding == nullptr) {
 		return;
 	}
-	Client *client = *found;
-	Subscription *subscription = client->subscriptions.getptr(p_subscription);
-	if (subscription == nullptr) {
-		return;
-	}
-	Object *object = ObjectDB::get_instance(subscription->object_id);
-	Dictionary params;
-	params["subscription"] = p_subscription;
-	params["signal"] = String(subscription->signal);
+	Object *object = ObjectDB::get_instance(binding->object_id);
 	if (object == nullptr) {
-		params["closed"] = true;
-		client->subscriptions.erase(p_subscription);
+		_prune_bindings();
+		return;
+	}
+	EventRecord record;
+	record.seq = next_event_seq++;
+	record.object_id = binding->object_id;
+	record.signal = binding->signal;
+	if (Node *node = Object::cast_to<Node>(object)) {
+		record.path = String(node->get_path());
+	}
+	for (int index = 0; index < p_args.size(); index++) {
+		record.args.push_back(_json_value(p_args[index]));
+	}
+	event_history.push_back(record);
+	if (event_history.size() > GAI_MAX_EVENT_HISTORY) {
+		event_history.remove_at(0);
+	}
+
+	const Vector<EventSubscriber> subscribers = binding->subscribers;
+	for (const EventSubscriber &subscriber : subscribers) {
+		Client **found = clients.getptr(subscriber.client_id);
+		if (found == nullptr) {
+			continue;
+		}
+		Client *client = *found;
+		if (!client->subscriptions.has(subscriber.subscription_id)) {
+			continue;
+		}
+		Dictionary params;
+		params["subscription"] = subscriber.subscription_id;
+		params["seq"] = (int64_t)record.seq;
+		params["signal"] = String(record.signal);
+		params["handle"] = String::num_uint64((uint64_t)record.object_id);
+		params["path"] = record.path;
+		params["args"] = record.args;
 		Dictionary notification;
 		notification["jsonrpc"] = "2.0";
 		notification["method"] = "event";
 		notification["params"] = params;
-		_send_to(p_client_id, JSON::stringify(notification) + "\n");
-		return;
+		_send_to(subscriber.client_id, JSON::stringify(notification) + "\n");
+		if (!clients.has(subscriber.client_id)) {
+			continue;
+		}
 	}
-	params["handle"] = _handle(object);
-	if (Node *node = Object::cast_to<Node>(object)) {
-		params["path"] = String(node->get_path());
-	}
-	Array values;
-	for (int i = 0; i < p_args.size(); i++) {
-		values.push_back(_json_value(p_args[i]));
-	}
-	params["args"] = values;
-	Dictionary notification;
-	notification["jsonrpc"] = "2.0";
-	notification["method"] = "event";
-	notification["params"] = params;
-	_send_to(p_client_id, JSON::stringify(notification) + "\n");
 }
 
 Node *GaiAgentServer::_node_for(const String &p_path) {
@@ -689,26 +729,76 @@ Variant GaiAgentServer::_rpc_event_subscribe(const Variant &p_params) {
 	if (current_client->subscriptions.size() >= GAI_MAX_SUBSCRIPTIONS) {
 		return _error("too many subscriptions");
 	}
-	const int subscription_id = next_subscription_id++;
-	Callable callable = Callable(memnew(GaiAgentEventCallable(this, current_client->id, subscription_id)));
-	const Error error = object->connect(signal, callable);
-	if (error != OK) {
-		return _error("cannot connect signal: " + itos(error));
+	const ObjectID object_id = object->get_instance_id();
+	const String binding_key = String::num_uint64((uint64_t)object_id) + ":" + String(signal);
+	SignalBinding *binding = bindings.getptr(binding_key);
+	if (binding == nullptr) {
+		SignalBinding binding_value;
+		binding_value.key = binding_key;
+		binding_value.object_id = object_id;
+		binding_value.signal = signal;
+		if (Node *node = Object::cast_to<Node>(object)) {
+			binding_value.path = String(node->get_path());
+		}
+		binding_value.callable = Callable(memnew(GaiAgentEventCallable(this, binding_key)));
+		const Error error = object->connect(signal, binding_value.callable);
+		if (error != OK) {
+			return _error("cannot connect signal: " + itos(error));
+		}
+		bindings[binding_key] = binding_value;
+		binding = bindings.getptr(binding_key);
 	}
+	const int subscription_id = next_subscription_id++;
+	EventSubscriber subscriber;
+	subscriber.client_id = current_client->id;
+	subscriber.subscription_id = subscription_id;
+	binding->subscribers.push_back(subscriber);
 	Subscription subscription;
 	subscription.id = subscription_id;
-	subscription.signal = signal;
-	subscription.object_id = object->get_instance_id();
-	subscription.callable = callable;
-	if (Node *node = Object::cast_to<Node>(object)) {
-		subscription.path = String(node->get_path());
-	}
+	subscription.binding_key = binding_key;
 	current_client->subscriptions[subscription_id] = subscription;
+
 	Dictionary result;
 	result["subscription"] = subscription_id;
 	result["signal"] = String(signal);
 	result["handle"] = _handle(object);
-	result["path"] = subscription.path;
+	result["path"] = binding->path;
+	result["last_seq"] = (int64_t)(next_event_seq - 1);
+	if (params.has("since")) {
+		int64_t since = params.get("since", 0);
+		if (since < 0) {
+			since = 0;
+		}
+		bool lost = false;
+		if (!event_history.is_empty() && (uint64_t)since < event_history[0].seq - 1) {
+			lost = true;
+		}
+		Array replay;
+		for (const EventRecord &record : event_history) {
+			if (record.object_id != object_id || record.signal != signal) {
+				continue;
+			}
+			if (record.seq <= (uint64_t)since) {
+				continue;
+			}
+			Dictionary event;
+			event["subscription"] = subscription_id;
+			event["seq"] = (int64_t)record.seq;
+			event["signal"] = String(record.signal);
+			event["handle"] = String::num_uint64((uint64_t)record.object_id);
+			event["path"] = record.path;
+			event["args"] = record.args;
+			replay.push_back(event);
+		}
+		if (replay.size() > GAI_MAX_REPLAY) {
+			while (replay.size() > GAI_MAX_REPLAY) {
+				replay.remove_at(0);
+			}
+			lost = true;
+		}
+		result["replay"] = replay;
+		result["lost"] = lost;
+	}
 	return result;
 }
 
@@ -725,10 +815,22 @@ Variant GaiAgentServer::_rpc_event_unsubscribe(const Variant &p_params) {
 	if (found == nullptr) {
 		return _error("subscription not found");
 	}
-	const Subscription subscription = *found;
-	Object *object = ObjectDB::get_instance(subscription.object_id);
-	if (object != nullptr && object->is_connected(subscription.signal, subscription.callable)) {
-		object->disconnect(subscription.signal, subscription.callable);
+	const String binding_key = found->binding_key;
+	SignalBinding *binding = bindings.getptr(binding_key);
+	if (binding != nullptr) {
+		for (int index = binding->subscribers.size() - 1; index >= 0; index--) {
+			const EventSubscriber &subscriber = binding->subscribers[index];
+			if (subscriber.client_id == current_client->id && subscriber.subscription_id == subscription_id) {
+				binding->subscribers.remove_at(index);
+			}
+		}
+		if (binding->subscribers.is_empty()) {
+			Object *object = ObjectDB::get_instance(binding->object_id);
+			if (object != nullptr && binding->callable.is_valid() && object->is_connected(binding->signal, binding->callable)) {
+				object->disconnect(binding->signal, binding->callable);
+			}
+			bindings.erase(binding_key);
+		}
 	}
 	current_client->subscriptions.erase(subscription_id);
 	Dictionary result;
@@ -744,13 +846,18 @@ Variant GaiAgentServer::_rpc_event_list(const Variant &p_params) {
 		return result;
 	}
 	for (const KeyValue<int, Subscription> &entry : current_client->subscriptions) {
-		const Subscription &subscription = entry.value;
 		Dictionary info;
-		info["subscription"] = subscription.id;
-		info["signal"] = String(subscription.signal);
-		info["handle"] = String::num_uint64((uint64_t)subscription.object_id);
-		info["path"] = subscription.path;
-		Object *object = ObjectDB::get_instance(subscription.object_id);
+		info["subscription"] = entry.key;
+		SignalBinding *binding = bindings.getptr(entry.value.binding_key);
+		if (binding == nullptr) {
+			info["closed"] = true;
+			result.push_back(info);
+			continue;
+		}
+		info["signal"] = String(binding->signal);
+		info["handle"] = String::num_uint64((uint64_t)binding->object_id);
+		info["path"] = binding->path;
+		Object *object = ObjectDB::get_instance(binding->object_id);
 		info["closed"] = object == nullptr;
 		if (object != nullptr) {
 			info["handle"] = _handle(object);

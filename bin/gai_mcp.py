@@ -77,12 +77,14 @@ class BridgeConnection:
             raise RuntimeError(str(response["error"].get("message", "bridge error")))
         return response.get("result")
 
-    def subscribe(self, path=None, handle=None, signal=None):
+    def subscribe(self, path=None, handle=None, signal=None, since=None):
         params = {"signal": signal}
         if handle is not None:
             params["handle"] = handle
         elif path is not None:
             params["path"] = path
+        if since is not None:
+            params["since"] = int(since)
         return self.call("event.subscribe", params)
 
     def unsubscribe(self, subscription: int):
@@ -354,6 +356,10 @@ class Server:
                         "path": {"type": "string"},
                         "handle": {"type": "string"},
                         "signal": {"type": "string"},
+                        "since": {
+                            "type": "integer",
+                            "description": "Replay events with a seq greater than this value.",
+                        },
                     },
                     ("signal",),
                 ),
@@ -563,7 +569,12 @@ class Server:
             raise ToolError("handle must be a string")
         if bool(path) == bool(handle):
             raise ToolError("pass exactly one of path or handle")
-        return self.event_source.subscribe(path=path, handle=handle, signal=signal)
+        since = arguments.get("since")
+        if since is not None and (isinstance(since, bool) or not isinstance(since, int)):
+            raise ToolError("since must be an integer")
+        return self.event_source.subscribe(
+            path=path, handle=handle, signal=signal, since=since
+        )
 
     def unsubscribe_tool(self, arguments: dict) -> Any:
         if self.event_source is None:

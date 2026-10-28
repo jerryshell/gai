@@ -17,12 +17,31 @@ struct MethodInfo;
 struct PropertyInfo;
 
 class GaiAgentServer : public Object {
+	struct EventSubscriber {
+		int client_id = 0;
+		int subscription_id = 0;
+	};
+
+	struct SignalBinding {
+		String key;
+		ObjectID object_id;
+		StringName signal;
+		String path;
+		Callable callable;
+		Vector<EventSubscriber> subscribers;
+	};
+
 	struct Subscription {
 		int id = 0;
-		StringName signal;
+		String binding_key;
+	};
+
+	struct EventRecord {
+		uint64_t seq = 0;
 		ObjectID object_id;
-		Callable callable;
+		StringName signal;
 		String path;
+		Array args;
 	};
 
 	struct Client {
@@ -37,6 +56,9 @@ class GaiAgentServer : public Object {
 
 	Ref<TCPServer> server;
 	HashMap<int, Client *> clients;
+	HashMap<String, SignalBinding> bindings;
+	Vector<EventRecord> event_history;
+	uint64_t next_event_seq = 1;
 	Client *current_client = nullptr;
 	int next_client_id = 1;
 	int next_subscription_id = 1;
@@ -117,9 +139,9 @@ class GaiAgentServer : public Object {
 	void _drop_client(Client *p_client);
 	void _drop_clients();
 	void _disconnect_subscriptions(Client *p_client);
-	void _prune_subscriptions(Client *p_client);
+	void _prune_bindings();
 	void _send_to(int p_client_id, const String &p_payload);
-	void _queue_event(int p_client_id, int p_subscription, const Array &p_args);
+	void _queue_event(const String &p_binding_key, const Array &p_args);
 
 	void _handle(Client *p_client, const String &p_line);
 	void _handle_line(const String &p_line);

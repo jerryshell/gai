@@ -89,11 +89,12 @@ JSON-RPC notifications without an `id`:
  "token": "<token>"}
 ```
 
-The response carries a subscription id. The server then sends:
+The response carries a subscription id and the last sequence number. The
+server then sends:
 
 ```json
 {"jsonrpc": "2.0", "method": "event",
- "params": {"subscription": 1, "signal": "visibility_changed",
+ "params": {"subscription": 1, "seq": 7, "signal": "visibility_changed",
             "handle": "123", "path": "/root/Main/Title", "args": []}}
 ```
 
@@ -108,6 +109,33 @@ The response carries a subscription id. The server then sends:
   connection per call; use `bin/gai agent watch` or a raw socket for events.
 - Signals must be emitted on the main thread. A signal emitted from a worker
   thread can race with the bridge queues.
+- Subscribers for the same object and signal share one engine connection. One
+  emission records one event and reaches every subscriber with the same `seq`.
+- The server keeps the last 512 events. An event is recorded while at least one
+  subscription exists; a replay can still return events after the last
+  subscriber leaves.
+
+## Event replay
+
+Add `since` to `event.subscribe` to replay recorded events:
+
+```json
+{"jsonrpc": "2.0", "id": 2, "method": "event.subscribe",
+ "params": {"path": "/root/Main/Title", "signal": "visibility_changed",
+            "since": 5},
+ "token": "<token>"}
+```
+
+The response then also has:
+
+- `replay`: events with `seq` greater than `since`, oldest first, at most 128.
+- `lost`: true when `since` is older than the retained history or the replay
+  was truncated.
+- `last_seq`: the latest event sequence before the subscription.
+
+A client that knows `last_seq` passes it as `since` on reconnect. A `since` of 0
+asks for all retained events for that object and signal. Events are not deduped
+against `since`; the client should drop an event whose `seq` it already has.
 
 ```sh
 bin/gai agent watch --path /root/Main/Title --signal visibility_changed
@@ -174,9 +202,11 @@ run needs a binary built from the current HEAD.
 
 ## Not yet
 
-- Event replay and history. A client that disconnects loses its subscriptions.
 - A per-request deadline or task id. A long single request blocks all clients
-  until it returns; the batch deadline only bounds the next batch item.
+  until it returns; the batch deadline only bounds the next batch item. Read
+  `docs/gai/decisions/0004-synchronous-requests.md`.
+- Durable event history. The last 512 events live in memory; a restart clears
+  them.
 - Export helpers. Export internals are reachable through editor objects when
   they are exposed as singletons or objects.
 - Screenshots in headless CI. Use `--display` with a virtual display.

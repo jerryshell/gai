@@ -265,6 +265,106 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
 
     @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_event_replay(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        state = json.loads((self.tmp / ".gai" / "agent.json").read_text(encoding="utf-8"))
+        token = state["token"]
+
+        def connect():
+            sock = socket.create_connection(("127.0.0.1", state["port"]), timeout=5)
+            sock.settimeout(5)
+            self.addCleanup(sock.close)
+            return sock
+
+        def send(sock, request_id, method, params):
+            request = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+                "token": token,
+            }
+            sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+
+        def read(sock):
+            data = b""
+            while b"\n" not in data:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            return json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+
+        watcher = connect()
+        send(
+            watcher,
+            1,
+            "event.subscribe",
+            {"path": "/root/Main/Title", "signal": "visibility_changed"},
+        )
+        subscription = read(watcher)["result"]["subscription"]
+        self.raw(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "node.set",
+                    "params": {"path": "/root/Main/Title", "property": "visible", "value": False},
+                    "token": token,
+                }
+            )
+            + "\n"
+        )
+        event = read(watcher)
+        seq = event["params"]["seq"]
+        self.assertGreater(seq, 0)
+
+        send(watcher, 2, "event.unsubscribe", {"subscription": subscription})
+        self.assertTrue(read(watcher)["result"]["removed"])
+        watcher.close()
+
+        replay = connect()
+        send(
+            replay,
+            3,
+            "event.subscribe",
+            {"path": "/root/Main/Title", "signal": "visibility_changed", "since": 0},
+        )
+        result = read(replay)["result"]
+        self.assertFalse(result["lost"])
+        self.assertTrue(
+            any(item["seq"] == seq for item in result["replay"]),
+            result["replay"],
+        )
+
+        send(
+            replay,
+            4,
+            "event.subscribe",
+            {"path": "/root/Main/Title", "signal": "visibility_changed", "since": seq},
+        )
+        result = read(replay)["result"]
+        self.assertEqual(result["replay"], [])
+
+        self.raw(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "node.set",
+                    "params": {"path": "/root/Main/Title", "property": "visible", "value": True},
+                    "token": token,
+                }
+            )
+            + "\n"
+        )
+        replay.close()
+
+        stop = self.run_gai("agent", "stop")
+        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
     def test_editor_mode(self):
         start = self.run_gai("agent", "start", "--editor", timeout=60)
         self.assertEqual(start.returncode, 0, start.stdout + start.stderr)

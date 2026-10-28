@@ -56,7 +56,7 @@ For a game outside this clone, set `GAI_GAME` in the client environment.
 | `gai_screenshot` | Captures the game to a PNG and returns it as image content. Needs a display. |
 | `gai_test` | Runs `bin/gai test --json`; optional `filter`. |
 | `gai_check` | Runs `bin/gai check` and returns its output. |
-| `gai_subscribe` | Subscribes to a bridge signal by `path` or `handle`. |
+| `gai_subscribe` | Subscribes to a bridge signal by `path` or `handle`; `since` replays history. |
 | `gai_unsubscribe` | Removes a subscription by id. |
 
 `gai_call` example: `{"method": "object.call", "params": {"handle": "...",
@@ -81,10 +81,14 @@ connection. Bridge events arrive as MCP logging notifications:
 ```
 
 - Pass exactly one of `path` or `handle`, and `signal`.
+- Pass `since` to replay retained events. The tool result includes `replay`,
+  `lost`, and `last_seq`.
 - `gai_unsubscribe` takes the `subscription` id.
 - The adapter advertises the MCP logging capability. A client that does not
   show logging notifications may ignore events.
-- No replay. A disconnect loses the subscription and events.
+- The bridge keeps the last 512 events and replays at most 128 per subscribe.
+  A game restart clears the history. A disconnect loses the subscription; pass
+  `since` on the next subscribe to replay.
 - A freed object sends `"closed": true` in the event.
 
 ## Resources
@@ -123,8 +127,9 @@ Resources are read-only.
 
 ## Limits
 
-- Event forwarding has no replay or history. A disconnect loses subscriptions
-  and events. Use `bin/gai agent watch` or a raw socket for a non-MCP watcher.
+- Event history is in memory in the game process. A game restart clears it. A
+  disconnect loses the subscription; pass `since` on the next subscribe.
+- The adapter does not resubscribe automatically after a bridge restart.
 - MCP cancellation is ignored. The bridge has no cancel request.
 - `gai_test` and `gai_check` run separate processes. MCP cancellation does not
   stop them.
@@ -137,8 +142,8 @@ Resources are read-only.
 - This is not the in-engine MCP server that Blazium's JustAMCP provides. It
   keeps gai's CLI-first bridge and adds the protocol at the edge. The design
   reference is `docs/gai/decisions/0002-cli-first.md`.
-- If gai later needs replay or many MCP clients, add them to the bridge and keep
-  this adapter thin.
+- If gai later needs durable replay or many MCP clients, add them to the bridge
+  and keep this adapter thin.
 
 ## Test
 
