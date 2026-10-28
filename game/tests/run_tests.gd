@@ -16,6 +16,9 @@ extends SceneTree
 var _test_dir: String = "res://tests"
 var _filter: String = ""
 var _json_only: bool = false
+var _only_file: String = ""
+var _only_method: String = ""
+var _list_only: bool = false
 
 
 func _initialize() -> void:
@@ -26,6 +29,12 @@ func _initialize() -> void:
 			_filter = argument.trim_prefix("--filter=")
 		elif argument == "--json":
 			_json_only = true
+		elif argument.begins_with("--file="):
+			_only_file = argument.trim_prefix("--file=")
+		elif argument.begins_with("--method="):
+			_only_method = argument.trim_prefix("--method=")
+		elif argument == "--list":
+			_list_only = true
 	_run.call_deferred()
 
 
@@ -37,14 +46,36 @@ func _run() -> void:
 		return
 
 	var files: Array[String] = []
-	_collect(_test_dir, files)
-	files.sort()
+	if not _only_file.is_empty():
+		if not _only_file.begins_with("res://"):
+			print("test: --file must start with res://")
+			quit(2)
+			return
+		files.append(_only_file)
+	else:
+		_collect(_test_dir, files)
+		files.sort()
 
 	var results: Array[Dictionary] = []
 	var passed := 0
 	var failed := 0
 	var pending := 0
 	var skipped := 0
+
+	if _list_only:
+		var listed: Array = []
+		for file in files:
+			var script := load(file) as GDScript
+			if script == null:
+				continue
+			for method in _test_methods(script):
+				if not _only_method.is_empty() and method != _only_method:
+					continue
+				if _matches(file, method):
+					listed.append({"file": file, "name": method})
+		print("GAI_TEST_LIST " + JSON.stringify(listed))
+		quit(0)
+		return
 
 	for file in files:
 		var script := load(file) as GDScript
@@ -87,6 +118,8 @@ func _run() -> void:
 			continue
 
 		for method in methods:
+			if not _only_method.is_empty() and method != _only_method:
+				continue
 			if not _matches(file, method):
 				continue
 			var result: Dictionary = await _run_one(instance, file, method)

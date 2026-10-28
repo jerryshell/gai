@@ -12,6 +12,10 @@ runs. It does not prove that the game behaves correctly. `bin/gai test` runs
 | `bin/gai test --filter player` | Run tests whose `file::name` contains `player`. A filter with no match exits 1. |
 | `bin/gai test --json` | Print one JSON object. |
 | `bin/gai test --verbose` | Print the engine output. |
+| `bin/gai test --isolate` | Run each test file in a separate engine process. |
+| `bin/gai test --isolate-tests` | Run each test method in a separate engine process. |
+| `bin/gai test --isolate --file-timeout 30` | Bound one file; a hung file is killed and the rest run. |
+| `bin/gai test --isolate-tests --file-timeout 30` | Bound one test; only that test times out. |
 | `bin/gai check` | Run the game checks and the tests. |
 | `bin/gai check --no-tests` | Skip the tests. |
 
@@ -138,6 +142,8 @@ func test_damage() -> void:
   ```
 
   A `RefCounted` double lives as long as your variable.
+- `double_scene(path, methods)` instantiates a scene and doubles its root
+  script. Pass the returned `Node` to `auto_free`.
 - `double_script(path, methods)` returns the generated script. Set
   `instance.__gai_test = self` before you use it.
 - `stub(object, method, value, args)` returns `value` for one argument list, or
@@ -164,6 +170,8 @@ func test_damage() -> void:
   `passed`, `failed`, `pending`, `duration_ms`, and `results`. Each result has
   `file`, `name`, `status`, `failures`, `pending`, and `duration_ms`.
 - Exits 0 when every test passes or is pending; 1 when a test fails.
+- Writes a JUnit XML report to `.gai/logs/test.xml`. `check` writes the same
+  report when it runs the tests.
 
 `bin/gai test` also fails when the engine prints an `ERROR:` or `SCRIPT ERROR:`
 line, even when the test method returned. A runtime error aborts that method,
@@ -172,12 +180,18 @@ test that should pass.
 
 ## Limits
 
-- Tests run in one engine process. A blocking loop hangs the run until the CLI
-  timeout. `bin/gai test` defaults to 300 seconds; `bin/gai check` uses its own
-  per-step `--timeout` (default 120 seconds).
+- By default tests run in one engine process. A blocking loop hangs the run
+  until the CLI timeout. `bin/gai test` defaults to 300 seconds; `bin/gai check`
+  uses its own per-step `--timeout` (default 120 seconds).
+- `--isolate` runs each test file in its own engine process. A hung file hits
+  `--file-timeout` (default 60 seconds), is reported as a timeout, and the other
+  files still run.
+- `--isolate-tests` runs each test method in its own engine process. A hung test
+  hits the same timeout and only that test fails. It starts one engine process
+  per test, so it is slower than `--isolate`.
 - A test that calls `quit()` stops the runner.
-- Doubles cover eligible GDScript methods only. There is no scene doubling;
-  instantiate a scene yourself when the test needs its child nodes.
+- Doubles cover eligible GDScript methods only. `double_scene` replaces the
+  root script of an instantiated scene; it does not double child scripts.
 - Tests are development-time code. Exclude `tests/` from an export preset when
   the build must not ship test scripts.
 - This runner is gai's own; it is not GUT. The base class and the assertion

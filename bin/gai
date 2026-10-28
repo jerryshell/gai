@@ -23,6 +23,7 @@ import tempfile
 import time
 import urllib.request
 import zipfile
+from xml.sax.saxutils import escape, quoteattr
 from datetime import date
 from pathlib import Path
 
@@ -827,6 +828,7 @@ def collect_errors(text: str):
 
 
 TEST_RESULT_PREFIX = "GAI_TEST_RESULT "
+TEST_LIST_PREFIX = "GAI_TEST_LIST "
 
 
 def parse_test_result(text: str):
@@ -838,6 +840,64 @@ def parse_test_result(text: str):
         except json.JSONDecodeError:
             return None
         return value if isinstance(value, dict) else None
+    return None
+
+
+def write_test_junit(summary, path: Path) -> None:
+    results = summary.get("results", []) if isinstance(summary, dict) else []
+    if not isinstance(results, list):
+        results = []
+    failures = sum(1 for item in results if item.get("status") == "fail")
+    skipped = sum(1 for item in results if item.get("status") == "pending")
+    duration = float(summary.get("duration_ms", 0)) / 1000.0 if isinstance(summary, dict) else 0.0
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        "<testsuite name={} tests=\"{}\" failures=\"{}\" skipped=\"{}\" time=\"{:.3f}\">".format(
+            quoteattr("gai"),
+            len(results),
+            failures,
+            skipped,
+            duration,
+        ),
+    ]
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        classname = str(item.get("file", ""))
+        name = str(item.get("name", ""))
+        seconds = float(item.get("duration_ms", 0)) / 1000.0
+        lines.append(
+            "  <testcase classname={} name={} time=\"{:.3f}\">".format(
+                quoteattr(classname),
+                quoteattr(name),
+                seconds,
+            )
+        )
+        for failure in item.get("failures", []) or []:
+            message = str(failure)
+            lines.append(
+                "    <failure message={}>{}</failure>".format(
+                    quoteattr(message),
+                    escape(message),
+                )
+            )
+        if item.get("status") == "pending":
+            reason = str(item.get("pending", ""))
+            lines.append("    <skipped message={}/>".format(quoteattr(reason)))
+        lines.append("  </testcase>")
+    lines.append("</testsuite>")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def parse_test_list(text: str):
+    for line in reversed(text.splitlines()):
+        if not line.startswith(TEST_LIST_PREFIX):
+            continue
+        try:
+            value = json.loads(line[len(TEST_LIST_PREFIX) :])
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, list) else None
     return None
 
 
@@ -936,6 +996,194 @@ def remove_script_checker() -> None:
         pass
 
 
+def cmd_test_isolate(engine, args, log_path: Path, junit_path: Path, per_test: bool = False) -> int:
+    if args.file_timeout <= 0:
+        print("gai: --file-timeout must be positive", file=sys.stderr)
+        return 2
+    test_root = GAME_DIR / args.dir.removeprefix("res://")
+    files: list[Path] = []
+    if test_root.is_dir():
+        files = sorted(
+            path
+            for path in test_root.rglob("test_*.gd")
+            if not any(part.startswith(".") for part in path.relative_to(test_root).parts)
+        )
+    targets: list[tuple[str, str]] = []
+    if per_test:
+        list_argv = [
+            engine,
+            "--headless",
+            "--path",
+            GAME_DIR,
+            "--script",
+            "res://tests/run_tests.gd",
+            "--",
+            f"--dir={args.dir}",
+            "--list",
+        ]
+        if args.filter:
+            list_argv.append(f"--filter={args.filter}")
+        try:
+            listed = run(
+                list_argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=args.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            print("test: discovery timed out", file=sys.stderr)
+            return 1
+        discovery_errors = collect_errors(listed.stdout or "")
+        if discovery_errors:
+            print("test: discovery found errors", file=sys.stderr)
+            for error in discovery_errors[:8]:
+                print("  " + error, file=sys.stderr)
+            return 1
+        parsed = parse_test_list(listed.stdout or "")
+        if parsed is None:
+            print("test: discovery did not return a test list", file=sys.stderr)
+            return 1
+        for item in parsed:
+            if isinstance(item, dict) and item.get("file") and item.get("name"):
+                targets.append((str(item["file"]), str(item["name"])))
+        files = [Path(item[0].removeprefix("res://")) for item in targets]
+    else:
+        for path in files:
+            targets.append(("res://" + path.relative_to(GAME_DIR).as_posix(), ""))
+
+    aggregate = {
+        "version": 1,
+        "dir": args.dir,
+        "filter": args.filter,
+        "files": len({item[0] for item in targets}),
+        "skipped_files": 0,
+        "tests": 0,
+        "passed": 0,
+        "failed": 0,
+        "pending": 0,
+        "duration_ms": 0,
+        "results": [],
+        "isolated": True,
+    }
+    outputs = []
+    for relative, method in targets:
+        argv = [
+            engine,
+            "--headless",
+            "--path",
+            GAME_DIR,
+            "--script",
+            "res://tests/run_tests.gd",
+            "--",
+            f"--dir={args.dir}",
+            f"--file={relative}",
+            "--json",
+        ]
+        if method:
+            argv.append(f"--method={method}")
+        if args.filter:
+            argv.append(f"--filter={args.filter}")
+        started = time.time()
+        try:
+            result = run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=args.file_timeout,
+            )
+            text = result.stdout or ""
+            summary = parse_test_result(text)
+            if summary is None:
+                summary = {
+                    "version": 1,
+                    "results": [
+                        {
+                            "file": relative,
+                            "name": method or "<run>",
+                            "status": "fail",
+                            "failures": [f"no test result (exit {result.returncode})"],
+                            "pending": "",
+                            "duration_ms": int((time.time() - started) * 1000),
+                        }
+                    ],
+                    "tests": 1,
+                    "passed": 0,
+                    "failed": 1,
+                    "pending": 0,
+                    "duration_ms": int((time.time() - started) * 1000),
+                }
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.output or ""
+            if isinstance(partial, bytes):
+                partial = partial.decode("utf-8", errors="replace")
+            text = partial
+            summary = {
+                "version": 1,
+                "results": [
+                    {
+                        "file": relative,
+                        "name": method or "<timeout>",
+                        "status": "fail",
+                        "failures": [f"timed out after {args.file_timeout}s"],
+                        "pending": "",
+                        "duration_ms": int(args.file_timeout * 1000),
+                    }
+                ],
+                "tests": 1,
+                "passed": 0,
+                "failed": 1,
+                "pending": 0,
+                "duration_ms": int(args.file_timeout * 1000),
+            }
+        outputs.append(text)
+        if args.verbose:
+            print(text.rstrip())
+        errors = collect_errors(text)
+        if errors:
+            summary["results"].append(
+                {
+                    "file": relative,
+                    "name": "<engine>",
+                    "status": "fail",
+                    "failures": errors[:8],
+                    "pending": "",
+                    "duration_ms": 0,
+                }
+            )
+            summary["tests"] = int(summary.get("tests", 0)) + 1
+            summary["failed"] = int(summary.get("failed", 0)) + 1
+        for item in summary.get("results", []):
+            aggregate["results"].append(item)
+        aggregate["tests"] += int(summary.get("tests", 0))
+        aggregate["passed"] += int(summary.get("passed", 0))
+        aggregate["failed"] += int(summary.get("failed", 0))
+        aggregate["pending"] += int(summary.get("pending", 0))
+        aggregate["duration_ms"] += int(summary.get("duration_ms", 0))
+
+    log_path.write_text("".join(outputs), encoding="utf-8")
+    write_test_junit(aggregate, junit_path)
+    failed = aggregate["failed"] > 0
+    if args.json:
+        print(json.dumps(aggregate, ensure_ascii=False))
+        return 1 if failed else 0
+    print(
+        "tests: %d passed, %d failed, %d pending (%d ms)"
+        % (
+            aggregate["passed"],
+            aggregate["failed"],
+            aggregate["pending"],
+            aggregate["duration_ms"],
+        )
+    )
+    for line in test_failure_lines(aggregate):
+        print("  " + line)
+    print(f"log: {show_path(log_path)}")
+    print(f"junit: {show_path(junit_path)}")
+    return 1 if failed else 0
+
+
 def cmd_test(args) -> int:
     engine = require_engine()
     require_game()
@@ -970,6 +1218,8 @@ def cmd_test(args) -> int:
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / "test.log"
+    junit_path = LOG_DIR / "test.xml"
+    junit_path.unlink(missing_ok=True)
 
     if not (GAME_DIR / ".godot").is_dir():
         if not args.json:
@@ -988,6 +1238,15 @@ def cmd_test(args) -> int:
             else:
                 print(f"test: import timed out after {args.timeout}s")
             return 1
+
+    if args.isolate or args.isolate_tests:
+        return cmd_test_isolate(
+            engine,
+            args,
+            log_path,
+            junit_path,
+            per_test=args.isolate_tests,
+        )
 
     argv = [
         engine,
@@ -1028,6 +1287,8 @@ def cmd_test(args) -> int:
 
     log_path.write_text(text, encoding="utf-8")
     summary = parse_test_result(text)
+    if summary is not None:
+        write_test_junit(summary, junit_path)
     errors = collect_errors(text)
     failed = returncode != 0 or summary is None or bool(errors)
     if summary is not None and int(summary.get("failed", 0)) > 0:
@@ -1072,6 +1333,8 @@ def cmd_test(args) -> int:
         if len(errors) > 12:
             print(f"  ... and {len(errors) - 12} more")
     print(f"log: {show_path(log_path)}")
+    if summary is not None:
+        print(f"junit: {show_path(junit_path)}")
     return 1 if failed else 0
 
 
@@ -1087,6 +1350,8 @@ def cmd_check(args) -> int:
         return 1
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / "check.log"
+    junit_path = LOG_DIR / "test.xml"
+    junit_path.unlink(missing_ok=True)
 
     fresh_import = not (GAME_DIR / ".godot").is_dir()
     steps = [("import", [engine, "--headless", "--path", GAME_DIR, "--import"], not fresh_import)]
@@ -1200,6 +1465,7 @@ def cmd_check(args) -> int:
     log_path.write_text("".join(output), encoding="utf-8")
     test_summary = parse_test_result("".join(output))
     if test_summary is not None:
+        write_test_junit(test_summary, junit_path)
         failures.extend(test_failure_lines(test_summary))
     failures = list(dict.fromkeys(failures))
     version = engine_version(engine) or "unknown"
@@ -1225,6 +1491,7 @@ def cmd_check(args) -> int:
                 int(test_summary.get("pending", 0)),
             )
         )
+        print(f"junit: {show_path(junit_path)}")
     print(f"log: {show_path(log_path)}")
     return 0
 
@@ -2343,6 +2610,22 @@ def build_parser() -> argparse.ArgumentParser:
     test_cmd.add_argument("--timeout", type=int, default=300, help="seconds for the test run (default: 300)")
     test_cmd.add_argument("--json", action="store_true", help="print the result as JSON")
     test_cmd.add_argument("--verbose", action="store_true", help="print the engine output")
+    test_cmd.add_argument(
+        "--isolate",
+        action="store_true",
+        help="run each test file in a separate engine process",
+    )
+    test_cmd.add_argument(
+        "--isolate-tests",
+        action="store_true",
+        help="run each test method in a separate engine process",
+    )
+    test_cmd.add_argument(
+        "--file-timeout",
+        type=float,
+        default=60.0,
+        help="seconds per file or test with isolation (default: 60)",
+    )
     test_cmd.set_defaults(func=cmd_test)
 
     run_cmd = sub.add_parser("run", help="run the game")

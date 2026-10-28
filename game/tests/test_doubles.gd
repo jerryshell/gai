@@ -57,6 +57,17 @@ func test_double_defaults() -> void:
 	assert_eq(combat.label(), "stubbed")
 
 
+func test_double_scene() -> void:
+	var actor := double_scene("res://tests/fixtures/actor.tscn") as Node
+	assert_not_null(actor, "scene double is created")
+	if actor == null:
+		return
+	auto_free(actor)
+	actor.ping()
+	assert_called(actor, "ping")
+	assert_eq(actor.pings, 1)
+
+
 func test_double_node() -> void:
 	var actor := double("res://tests/fixtures/actor.gd") as Node
 	assert_not_null(actor)

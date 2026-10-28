@@ -149,6 +149,35 @@ func double_script(path: String, methods: Array[String] = []) -> GDScript:
 	return doubled
 
 
+## Instantiate a scene and replace its root script with a double. A Node
+## returned here must be passed to [method auto_free].
+func double_scene(path: String, methods: Array[String] = []) -> Node:
+	var packed := load(path) as PackedScene
+	if packed == null:
+		fail("double_scene: cannot load " + path)
+		return null
+	var scene := packed.instantiate()
+	if scene == null:
+		fail("double_scene: cannot instantiate " + path)
+		return null
+	var base_script := scene.get_script() as GDScript
+	if base_script == null or base_script.resource_path.is_empty():
+		fail("double_scene: the root has no GDScript")
+		scene.free()
+		return null
+	var doubled := double_script(base_script.resource_path, methods)
+	if doubled == null:
+		scene.free()
+		return null
+	scene.set_script(doubled)
+	if scene.get_script() != doubled:
+		fail("double_scene: cannot replace the root script")
+		scene.free()
+		return null
+	scene.set("__gai_test", self)
+	return scene
+
+
 ## Create a doubled instance of the script at [param path] and connect it to
 ## this test. A Node double must be passed to [method auto_free].
 func double(path: String, methods: Array[String] = []) -> Object:

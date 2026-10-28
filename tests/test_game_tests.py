@@ -82,6 +82,9 @@ class GameTestTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("0 failed", result.stdout)
         self.assertIn("tests:", result.stdout)
+        junit = (self.tmp / ".gai" / "logs" / "test.xml").read_text(encoding="utf-8")
+        self.assertIn("<testsuite", junit)
+        self.assertIn('failures="0"', junit)
 
     @unittest.skipUnless(ENGINE, "no engine binary")
     def test_json_output(self):
@@ -99,6 +102,8 @@ class GameTestTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("expected 5, got 4", result.stdout)
         self.assertIn("1 failed", result.stdout)
+        junit = (self.tmp / ".gai" / "logs" / "test.xml").read_text(encoding="utf-8")
+        self.assertIn("<failure", junit)
 
     @unittest.skipUnless(ENGINE, "no engine binary")
     def test_filter_without_match_fails(self):
@@ -118,6 +123,28 @@ class GameTestTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("cannot load or instantiate", result.stdout)
         self.assertIn("Parse Error", result.stdout)
+
+    @unittest.skipUnless(ENGINE, "no engine binary")
+    def test_isolate_passes(self):
+        result = self.run_gai("test", "--isolate")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0 failed", result.stdout)
+        self.assertIn("junit:", result.stdout)
+
+    @unittest.skipUnless(ENGINE, "no engine binary")
+    def test_isolate_timeout(self):
+        (self.tmp / "game" / "tests" / "test_zz_hang.gd").write_text(
+            "extends \"res://tests/gai_test_case.gd\"\n\n"
+            "func test_hang() -> void:\n"
+            "\twhile true:\n"
+            "\t\tpass\n",
+            encoding="utf-8",
+        )
+        result = self.run_gai("test", "--isolate-tests", "--file-timeout", "2")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("test_zz_hang.gd::test_hang", result.stdout)
+        self.assertIn("timed out after 2.0s", result.stdout)
+        self.assertIn("1 failed", result.stdout)
 
     @unittest.skipUnless(ENGINE, "no engine binary")
     def test_check_runs_tests(self):

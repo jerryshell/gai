@@ -18,6 +18,7 @@ releases.
   codes, `check` integration.
 - MCP stdio adapter: tools, resources, `gai_test`, `gai_check`.
 - `bin/gai agent watch` for signal events.
+- JUnit reports, `double_scene`, and per-file/per-test isolation with timeouts.
 - `bin/gai build` with source freshness, `bootstrap` rebuild, and an engine CI
   job with an SCons cache.
 - JSON-RPC batch requests with a 10-second batch budget.
@@ -40,17 +41,13 @@ is done.
 
 ## P0: test maturity
 
-The game-level harness proves behavior, but its limits are now visible.
+Done. The harness writes JUnit XML, doubles scripts and scenes, isolates test
+files, and isolates each test method with a timeout. A hung test now fails in
+bounded time without losing the rest of its file.
 
-- Per-test timeout and isolation for a hung test.
-- `double_scene` and inherited-method doubles; more stub signatures.
-- JUnit or a stable JSON report for CI.
-- Decide the Autowork question: port its engine-level core only if native
-  `ClassDB` assertions, input recording, or the E2E server are needed.
-- Keep the harness game-level until that need is proven.
-
-Done when: a hung test fails in bounded time, CI publishes a test report, and a
-scene can be doubled.
+Remaining optional work: more stub signatures, inherited-method doubles, and
+the Autowork decision if native `ClassDB` assertions or the E2E server are
+needed.
 
 ## P1: upstream 4.8
 
@@ -129,4 +126,4 @@ engine source.
 
 1. A per-request deadline or task id; a long single request still blocks all clients.
 2. Event replay and history for reconnects.
-3. Test timeout, JUnit output, and `double_scene`.
+3. The Autowork decision, only if native `ClassDB` assertions or E2E are needed.

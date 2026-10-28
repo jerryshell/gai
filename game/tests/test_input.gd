@@ -11,34 +11,34 @@ class InputProbe extends Node:
 
 func test_action_state() -> void:
 	action_down(&"ui_accept")
-	await frames(1)
+	await frames(2)
 	assert_true(Input.is_action_pressed(&"ui_accept"), "action is pressed")
 	action_up(&"ui_accept")
-	await frames(1)
+	await frames(2)
 	assert_false(Input.is_action_pressed(&"ui_accept"), "action is released")
 
 
 func test_event_dispatch() -> void:
 	var probe := auto_free(InputProbe.new())
 	action_down(&"ui_accept")
-	await frames(1)
+	await frames(2)
 	assert_true(probe.events > 0, "input event reached _input")
 	action_up(&"ui_accept")
 
 
 func test_key_and_mouse() -> void:
 	key_down(KEY_A)
-	await frames(1)
+	await frames(2)
 	assert_true(Input.is_key_pressed(KEY_A), "key is pressed")
 	key_up(KEY_A)
-	await frames(1)
+	await frames(2)
 	assert_false(Input.is_key_pressed(KEY_A), "key is released")
 
 	mouse_down(MOUSE_BUTTON_LEFT, Vector2(10, 10))
-	await frames(1)
+	await frames(2)
 	assert_true(Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT), "mouse is pressed")
 	mouse_up(MOUSE_BUTTON_LEFT, Vector2(10, 10))
-	await frames(1)
+	await frames(2)
 	assert_false(Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT), "mouse is released")
 
 

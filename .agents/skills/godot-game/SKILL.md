@@ -137,7 +137,9 @@ func test_jump_emits_signal() -> void:
   send events and update `Input`; `_gai_reset` releases them.
 - Doubles: `var player = double("res://player.gd")`, then
   `stub(player, "take_damage", 0)` and `assert_called(player, "take_damage", [2])`.
-  A `Node` double needs `auto_free`.
+  A `Node` double needs `auto_free`. Use `double_scene("res://player.tscn")`
+  when the test needs the scene's child nodes.
+- `bin/gai test --isolate-tests --file-timeout 30` bounds one hung test.
 - Do not override `_gai_*` methods. Read `docs/gai/testing.md`.
 
 ## Do not
