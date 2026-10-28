@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import contextlib
 import gzip
 import hashlib
 import json
@@ -70,7 +71,10 @@ WORKSPACE_FILES = (
     "NOTICE.md",
     "README.md",
     "tests/test_agent.py",
+    "tests/test_build.py",
     "tests/test_check.py",
+    "tests/test_game_tests.py",
+    "tests/test_mcp.py",
     "tests/test_steam.py",
     "tests/test_upstream.py",
 )
@@ -627,7 +631,54 @@ def build_jobs() -> int:
     return max(1, min(cpus, int(mem_gb / 1.5)))
 
 
-def build_engine_command():
+ENGINE_SOURCE_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc",
+    ".m", ".mm", ".S", ".glsl", ".gdshader", ".cs", ".py",
+}
+ENGINE_BUILD_NAMES = {
+    "SConstruct", "SCsub", "config.py", "version.py", "methods.py",
+    "platform_methods.py",
+}
+ENGINE_SKIP_DIRS = {"bin", "game", "docs", "tests", "build", "node_modules", "__pycache__"}
+
+
+def _is_engine_source(path: Path) -> bool:
+    if path.name in ENGINE_BUILD_NAMES or path.name.endswith("_builders.py"):
+        return True
+    return path.suffix in ENGINE_SOURCE_SUFFIXES
+
+
+def newest_engine_source():
+    newest = None
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in ENGINE_SKIP_DIRS and not name.startswith(".")
+        ]
+        for name in filenames:
+            path = Path(dirpath) / name
+            if not _is_engine_source(path):
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if newest is None or mtime > newest[1]:
+                newest = (path, mtime)
+    return newest
+
+
+def build_is_stale(engine):
+    newest = newest_engine_source()
+    if engine is None or not engine.is_file():
+        return True, newest
+    if newest is None:
+        return False, None
+    return newest[1] > engine.stat().st_mtime, newest
+
+
+def build_engine_command(jobs=None):
     system = platform.system()
     command = ["scons"]
     if system == "Linux":
@@ -642,6 +693,52 @@ def build_engine_command():
         die(f"no build recipe for {system}. Read `docs/gai/build.md`.")
     command.append(f"-j{build_jobs()}")
     return command
+
+
+def cmd_build(args) -> int:
+    if args.jobs is not None and args.jobs < 1:
+        print("gai: --jobs must be at least 1", file=sys.stderr)
+        return 2
+    engine = built_engine()
+    stale, newest = build_is_stale(engine)
+    if args.check:
+        if engine is None:
+            print("build: no engine")
+            return 1
+        if stale:
+            source = show_path(newest[0]) if newest else "unknown"
+            print(f"build: stale ({source})")
+            return 1
+        print("build: up to date")
+        return 0
+
+    command = build_engine_command(args.jobs)
+    if args.dry_run:
+        print(" ".join(str(part) for part in command))
+        return 0
+    if not args.force and not stale:
+        print("build: up to date")
+        return 0
+    if shutil.which("scons") is None:
+        die(
+            "SCons is not installed. Install SCons and the platform build "
+            "dependencies from `docs/gai/build.md`."
+        )
+    if newest is not None:
+        print(f"build: newer source {show_path(newest[0])}", flush=True)
+    print("build: " + " ".join(str(part) for part in command), flush=True)
+    print("build: the first build can take 20 to 70 minutes", flush=True)
+    started = time.time()
+    result = run(command, cwd=ROOT)
+    if result.returncode != 0:
+        print(f"build: failed after {time.time() - started:.1f}s")
+        return 1
+    shutil.rmtree(GAME_DIR / ".godot", ignore_errors=True)
+    engine = built_engine()
+    print(f"build: ok ({time.time() - started:.1f}s)")
+    if engine is not None:
+        print(f"engine: {engine}")
+    return 0
 
 
 def cmd_bootstrap(args) -> int:
@@ -664,25 +761,21 @@ def cmd_bootstrap(args) -> int:
                 die(f"`GAI_GODOT` is not an executable file: {override}")
         else:
             engine = built_engine()
-        if engine is None:
-            if shutil.which("scons") is None:
-                die(
-                    "SCons is not installed. Install SCons and the platform build "
-                    "dependencies from `docs/gai/build.md`, then run `bin/gai bootstrap` again."
+            stale, newest = build_is_stale(engine)
+            if engine is None or stale or getattr(args, "rebuild", False):
+                result = cmd_build(
+                    argparse.Namespace(
+                        force=getattr(args, "rebuild", False),
+                        check=False,
+                        dry_run=False,
+                        jobs=None,
+                    )
                 )
-            command = build_engine_command()
-            print("gai: building the engine from source. This can take 20 to 70 minutes.", flush=True)
-            print("gai: " + " ".join(command), flush=True)
-            result = subprocess.run([str(part) for part in command], cwd=str(ROOT))
-            if result.returncode != 0:
-                die(
-                    "the engine build failed. Fix the first error above, then run "
-                    "`bin/gai bootstrap` again. Dependencies: `docs/gai/build.md`."
-                )
-            shutil.rmtree(GAME_DIR / ".godot", ignore_errors=True)
-            engine = built_engine()
-            if engine is None:
-                die("the build finished but no editor binary was found in `bin/`")
+                if result != 0:
+                    return result
+                engine = built_engine()
+                if engine is None:
+                    die("the build finished but no editor binary was found in `bin/`")
 
     print(f"gai: engine {engine_version(engine) or 'unknown'}", flush=True)
     os.environ["GAI_GODOT"] = str(engine)
@@ -714,7 +807,7 @@ def cmd_bootstrap(args) -> int:
         return 1
 
     require_game()
-    return cmd_check(argparse.Namespace(frames=5, timeout=120, scene=[]))
+    return cmd_check(argparse.Namespace(frames=5, timeout=120, scene=[], no_tests=False))
 
 
 SHUTDOWN_ERRORS = (
@@ -731,6 +824,41 @@ def collect_errors(text: str):
                 continue
             found.append(stripped)
     return found
+
+
+TEST_RESULT_PREFIX = "GAI_TEST_RESULT "
+
+
+def parse_test_result(text: str):
+    for line in reversed(text.splitlines()):
+        if not line.startswith(TEST_RESULT_PREFIX):
+            continue
+        try:
+            value = json.loads(line[len(TEST_RESULT_PREFIX) :])
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) else None
+    return None
+
+
+def test_failure_lines(summary, limit: int = 12):
+    lines = []
+    if not isinstance(summary, dict):
+        return lines
+    results = summary.get("results")
+    if not isinstance(results, list):
+        return lines
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") != "fail":
+            continue
+        failures = item.get("failures") or ["failed"]
+        detail = "; ".join(str(failure) for failure in failures)
+        lines.append(f"{item.get('file', '?')}::{item.get('name', '?')}: {detail}")
+        if len(lines) >= limit:
+            break
+    return lines
 
 
 def project_autoloads() -> list[str]:
@@ -808,6 +936,145 @@ def remove_script_checker() -> None:
         pass
 
 
+def cmd_test(args) -> int:
+    engine = require_engine()
+    require_game()
+    test_dir = args.dir
+    if not test_dir.startswith("res://"):
+        print("gai: --dir must start with res://", file=sys.stderr)
+        return 2
+    runner = GAME_DIR / "tests" / "run_tests.gd"
+    if not runner.is_file():
+        if args.dir != "res://tests":
+            print("test: res://tests/run_tests.gd is missing", file=sys.stderr)
+            return 1
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "tests": 0,
+                        "passed": 0,
+                        "failed": 0,
+                        "pending": 0,
+                        "results": [],
+                        "note": "no tests",
+                    }
+                )
+            )
+        else:
+            print("test: no tests (res://tests/run_tests.gd not found)")
+        return 0
+    if not (GAME_DIR / test_dir.removeprefix("res://")).is_dir():
+        print(f"test: no directory {test_dir}", file=sys.stderr)
+        return 1
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "test.log"
+
+    if not (GAME_DIR / ".godot").is_dir():
+        if not args.json:
+            print("test: first import", flush=True)
+        try:
+            run(
+                [engine, "--headless", "--path", GAME_DIR, "--import"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=args.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            if args.json:
+                print(json.dumps({"error": "import timeout"}))
+            else:
+                print(f"test: import timed out after {args.timeout}s")
+            return 1
+
+    argv = [
+        engine,
+        "--headless",
+        "--path",
+        GAME_DIR,
+        "--script",
+        "res://tests/run_tests.gd",
+        "--",
+        f"--dir={test_dir}",
+    ]
+    if args.filter:
+        argv.append(f"--filter={args.filter}")
+    if args.json:
+        argv.append("--json")
+
+    try:
+        result = run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=args.timeout,
+        )
+        text = result.stdout or ""
+        returncode = result.returncode
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.output or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        log_path.write_text(partial, encoding="utf-8")
+        if args.json:
+            print(json.dumps({"error": "timeout", "log": show_path(log_path)}))
+        else:
+            print(f"test: timed out after {args.timeout}s")
+            print(f"log: {show_path(log_path)}")
+        return 1
+
+    log_path.write_text(text, encoding="utf-8")
+    summary = parse_test_result(text)
+    errors = collect_errors(text)
+    failed = returncode != 0 or summary is None or bool(errors)
+    if summary is not None and int(summary.get("failed", 0)) > 0:
+        failed = True
+
+    if args.json:
+        payload = summary if summary is not None else {"error": "no test result"}
+        if errors:
+            payload["engine_errors"] = errors
+        print(json.dumps(payload, ensure_ascii=False))
+        return 1 if failed else 0
+
+    if args.verbose:
+        print(text.rstrip())
+
+    if summary is None:
+        print("test: the runner did not print GAI_TEST_RESULT")
+        if not args.verbose:
+            for line in text.rstrip().splitlines()[-20:]:
+                print("  " + line)
+    else:
+        print(
+            "tests: %d passed, %d failed, %d pending (%d ms)"
+            % (
+                int(summary.get("passed", 0)),
+                int(summary.get("failed", 0)),
+                int(summary.get("pending", 0)),
+                int(summary.get("duration_ms", 0)),
+            )
+        )
+        if args.filter and int(summary.get("tests", 0)) == 0:
+            print(f"test: no tests matched `{args.filter}`")
+        for line in test_failure_lines(summary):
+            print("  " + line)
+
+    if returncode != 0:
+        print(f"test: runner exited with code {returncode}")
+    if errors:
+        print(f"test: {len(errors)} engine error(s)")
+        for error in errors[:12]:
+            print("  " + error)
+        if len(errors) > 12:
+            print(f"  ... and {len(errors) - 12} more")
+    print(f"log: {show_path(log_path)}")
+    return 1 if failed else 0
+
+
 def cmd_check(args) -> int:
     engine = require_engine()
     require_game()
@@ -867,6 +1134,22 @@ def cmd_check(args) -> int:
                 [engine, "--headless", "--path", GAME_DIR, "--quit-after", str(args.frames), scene],
             )
         )
+    if not args.no_tests and (GAME_DIR / "tests" / "run_tests.gd").is_file():
+        steps.append(
+            (
+                "tests",
+                [
+                    engine,
+                    "--headless",
+                    "--path",
+                    GAME_DIR,
+                    "--script",
+                    "res://tests/run_tests.gd",
+                    "--",
+                    "--dir=res://tests",
+                ],
+            )
+        )
 
     output = []
     failures = list(preflight)
@@ -894,7 +1177,10 @@ def cmd_check(args) -> int:
                     and all('singleton" is null' in error for error in errors)
                 )
                 if result.returncode != 0 and not shutdown_crash and collect:
-                    failures.append(f"{name}: engine exited with code {result.returncode}")
+                    if name == "tests":
+                        failures.append("tests: failed")
+                    else:
+                        failures.append(f"{name}: engine exited with code {result.returncode}")
                 for error in errors:
                     if shutdown_crash and 'singleton" is null' in error:
                         continue
@@ -912,6 +1198,9 @@ def cmd_check(args) -> int:
             remove_script_checker()
 
     log_path.write_text("".join(output), encoding="utf-8")
+    test_summary = parse_test_result("".join(output))
+    if test_summary is not None:
+        failures.extend(test_failure_lines(test_summary))
     failures = list(dict.fromkeys(failures))
     version = engine_version(engine) or "unknown"
 
@@ -927,6 +1216,15 @@ def cmd_check(args) -> int:
     main_scene = read_main_scene()
     print(f"check: ok ({version})")
     print(f"main scene: {main_scene}")
+    if test_summary is not None:
+        print(
+            "tests: %d passed, %d failed, %d pending"
+            % (
+                int(test_summary.get("passed", 0)),
+                int(test_summary.get("failed", 0)),
+                int(test_summary.get("pending", 0)),
+            )
+        )
     print(f"log: {show_path(log_path)}")
     return 0
 
@@ -1255,6 +1553,93 @@ def cmd_agent_methods(args) -> int:
     return 0
 
 
+def cmd_agent_watch(args) -> int:
+    state = agent_state()
+    if state is None:
+        die("no agent is running. Run `bin/gai agent start` first.")
+    if not agent_pid_alive(int(state.get("pid", 0))):
+        die("the agent process is not running. Run `bin/gai agent start` again.")
+    params = {"signal": args.signal}
+    if args.handle:
+        params["handle"] = args.handle
+    else:
+        params["path"] = args.path
+    try:
+        sock = socket.create_connection(("127.0.0.1", int(state["port"])), timeout=5)
+    except OSError as exc:
+        die(f"agent: {exc}")
+    sock.settimeout(None)
+    stream = sock.makefile("r", encoding="utf-8", newline="\n")
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "event.subscribe",
+        "params": params,
+        "token": state["token"],
+    }
+    try:
+        sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        line = stream.readline()
+        if not line:
+            print("agent: the bridge closed the connection", file=sys.stderr)
+            return 1
+        response = json.loads(line)
+    except (OSError, ValueError) as exc:
+        print(f"agent: {exc}", file=sys.stderr)
+        return 1
+    if "error" in response:
+        print(f"agent: {response['error'].get('message', 'subscribe failed')}", file=sys.stderr)
+        return 1
+    result = response.get("result", {})
+    subscription = result.get("subscription")
+    print(
+        f"watching {args.path or args.handle} {args.signal} (subscription {subscription})",
+        file=sys.stderr,
+        flush=True,
+    )
+    seen = 0
+    try:
+        for line in stream:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                message = json.loads(text)
+            except ValueError:
+                continue
+            if message.get("method") != "event":
+                continue
+            print(json.dumps(message, ensure_ascii=False), flush=True)
+            seen += 1
+            if message.get("params", {}).get("closed"):
+                break
+            if args.count > 0 and seen >= args.count:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            unsubscribe = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "event.unsubscribe",
+                "params": {"subscription": subscription},
+                "token": state["token"],
+            }
+            sock.sendall((json.dumps(unsubscribe) + "\n").encode("utf-8"))
+        except OSError:
+            pass
+        try:
+            stream.close()
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return 0
+
+
 def cmd_agent_log(args) -> int:
     try:
         lines = AGENT_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -1263,6 +1648,96 @@ def cmd_agent_log(args) -> int:
     for line in lines[-args.lines:]:
         print(line)
     return 0
+
+
+def cmd_mcp(args) -> int:
+    require_game()
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        import gai_mcp
+    except ImportError as error:
+        print(f"gai-mcp: cannot import gai_mcp: {error}", file=sys.stderr)
+        return 1
+    if args.start:
+        with contextlib.redirect_stdout(sys.stderr):
+            code = cmd_agent_start(argparse.Namespace(display=args.display, editor=args.editor))
+        if code != 0:
+            return code
+    state = agent_state()
+    if state is None:
+        print(
+            "gai-mcp: no agent is running. Run `bin/gai agent start`, or pass --start.",
+            file=sys.stderr,
+        )
+        return 1
+    if not agent_pid_alive(int(state.get("pid", 0))):
+        print(
+            "gai-mcp: the agent process is not running. Run `bin/gai agent stop`, then start it again.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        connection = gai_mcp.BridgeConnection(
+            state["port"], state["token"], timeout=args.timeout
+        )
+    except (OSError, ValueError) as exc:
+        print(f"gai-mcp: cannot connect to the bridge: {exc}", file=sys.stderr)
+        return 1
+
+    def bridge(method: str, params: dict):
+        return connection.call(method, params)
+
+    gai_bin = Path(__file__).resolve()
+
+    def runner(command, timeout):
+        try:
+            result = subprocess.run(
+                [sys.executable, str(gai_bin), *command],
+                cwd=str(ROOT),
+                env=os.environ.copy(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+            )
+            return {
+                "returncode": result.returncode,
+                "stdout": result.stdout or "",
+                "stderr": result.stderr or "",
+            }
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.output or ""
+            if isinstance(partial, bytes):
+                partial = partial.decode("utf-8", errors="replace")
+            return {
+                "returncode": -1,
+                "stdout": partial,
+                "stderr": "",
+                "error": f"timed out after {timeout}s",
+            }
+
+    version = "unknown"
+    try:
+        version = (GAI_DIR / "version").read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        pass
+
+    try:
+        return gai_mcp.serve(
+            bridge,
+            sys.stdin,
+            sys.stdout,
+            root=ROOT,
+            project=GAME_DIR,
+            runtime=RUNTIME_DIR,
+            version=version,
+            runner=runner,
+            command_timeout=args.command_timeout,
+            event_source=connection,
+        )
+    finally:
+        connection.close()
 
 
 def cmd_run(args) -> int:
@@ -1837,13 +2312,38 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="use the official fallback engine instead of building gai",
     )
+    bootstrap.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="rebuild the engine even when the binary is current",
+    )
     bootstrap.set_defaults(func=cmd_bootstrap)
 
-    check = sub.add_parser("check", help="import assets, parse every script, and run the main scene")
+    build = sub.add_parser("build", help="build the gai engine from source")
+    build.add_argument("--force", action="store_true", help="build even when the binary is current")
+    build.add_argument("--check", action="store_true", help="exit 1 when a rebuild is needed")
+    build.add_argument("--dry-run", action="store_true", help="print the build command")
+    build.add_argument("--jobs", type=int, default=None, help="SCons jobs (default: memory-aware)")
+    build.set_defaults(func=cmd_build)
+
+    check = sub.add_parser("check", help="import assets, parse scripts, run the main scene and game tests")
     check.add_argument("--frames", type=int, default=5, help="frames to run (default: 5)")
     check.add_argument("--timeout", type=int, default=120, help="seconds per step (default: 120)")
     check.add_argument("--scene", action="append", default=[], help="run an extra scene, such as res://view/game_level_1/game_level_1.tscn")
+    check.add_argument("--no-tests", action="store_true", help="do not run game tests")
     check.set_defaults(func=cmd_check)
+
+    test_cmd = sub.add_parser("test", help="run game tests headlessly")
+    test_cmd.add_argument(
+        "--filter",
+        default="",
+        help="run tests whose file::name contains this text",
+    )
+    test_cmd.add_argument("--dir", default="res://tests", help="test directory (default: res://tests)")
+    test_cmd.add_argument("--timeout", type=int, default=300, help="seconds for the test run (default: 300)")
+    test_cmd.add_argument("--json", action="store_true", help="print the result as JSON")
+    test_cmd.add_argument("--verbose", action="store_true", help="print the engine output")
+    test_cmd.set_defaults(func=cmd_test)
 
     run_cmd = sub.add_parser("run", help="run the game")
     run_cmd.add_argument("extra", nargs=argparse.REMAINDER, help="arguments for the engine")
@@ -1899,6 +2399,43 @@ def build_parser() -> argparse.ArgumentParser:
     agent_log = agent_sub.add_parser("log", help="tail the game log")
     agent_log.add_argument("--lines", type=int, default=80)
     agent_log.set_defaults(func=cmd_agent_log)
+    agent_watch = agent_sub.add_parser("watch", help="stream signal events from the bridge")
+    agent_watch_target = agent_watch.add_mutually_exclusive_group(required=True)
+    agent_watch_target.add_argument("--path", help="node path, for example /root/Main")
+    agent_watch_target.add_argument("--handle", help="object handle from scene.tree or object.singleton")
+    agent_watch.add_argument("--signal", required=True, help="signal name")
+    agent_watch.add_argument("--count", type=int, default=0, help="stop after N events (default: run until Ctrl-C)")
+    agent_watch.set_defaults(func=cmd_agent_watch)
+
+    mcp = sub.add_parser("mcp", help="serve the agent bridge over MCP stdio")
+    mcp.add_argument(
+        "--start",
+        action="store_true",
+        help="start the game bridge if it is not running",
+    )
+    mcp.add_argument(
+        "--display",
+        action="store_true",
+        help="with --start, run with a display so screenshots work",
+    )
+    mcp.add_argument(
+        "--editor",
+        action="store_true",
+        help="with --start, start the editor instead of the game",
+    )
+    mcp.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="seconds per bridge call (default: 30)",
+    )
+    mcp.add_argument(
+        "--command-timeout",
+        type=float,
+        default=300.0,
+        help="seconds for gai_test and gai_check (default: 300)",
+    )
+    mcp.set_defaults(func=cmd_mcp)
 
     engine = sub.add_parser("engine", help="manage the official fallback engine")
     engine_sub = engine.add_subparsers(dest="engine_command", required=True)

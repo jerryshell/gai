@@ -148,6 +148,123 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
 
     @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_batch_requests(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        state = json.loads((self.tmp / ".gai" / "agent.json").read_text(encoding="utf-8"))
+        token = state["token"]
+
+        def request(request_id, request_token=None):
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "ping",
+                "params": {},
+                "token": token if request_token is None else request_token,
+            }
+
+        batch = self.raw(json.dumps([request(1), request(2)]) + "\n")
+        self.assertEqual([item["id"] for item in batch], [1, 2])
+        self.assertTrue(batch[0]["result"]["pong"])
+
+        unauthorized = self.raw(
+            json.dumps([request(3), request(4, "wrong")]) + "\n"
+        )
+        self.assertEqual(unauthorized[1]["error"]["code"], -32001)
+
+        empty = self.raw("[]\n")
+        self.assertEqual(empty["error"]["code"], -32600)
+
+        too_large = self.raw(json.dumps([request(index) for index in range(65)]) + "\n")
+        self.assertEqual(too_large["error"]["code"], -32600)
+        self.assertIn("Batch too large", too_large["error"]["message"])
+
+        stop = self.run_gai("agent", "stop")
+        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_multi_client_and_events(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        state = json.loads((self.tmp / ".gai" / "agent.json").read_text(encoding="utf-8"))
+
+        watcher = socket.create_connection(("127.0.0.1", state["port"]), timeout=5)
+        self.addCleanup(watcher.close)
+        watcher.settimeout(5)
+
+        def send(sock, request):
+            sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+
+        def read(sock):
+            data = b""
+            while b"\n" not in data:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            return json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+
+        send(
+            watcher,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "event.subscribe",
+                "params": {"path": "/root/Main/Title", "signal": "visibility_changed"},
+                "token": state["token"],
+            },
+        )
+        subscription = read(watcher)["result"]["subscription"]
+
+        hidden = self.raw(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "node.set",
+                    "params": {"path": "/root/Main/Title", "property": "visible", "value": False},
+                    "token": state["token"],
+                }
+            )
+            + "\n"
+        )
+        self.assertFalse(hidden["result"]["value"])
+
+        event = read(watcher)
+        self.assertEqual(event["method"], "event")
+        self.assertEqual(event["params"]["subscription"], subscription)
+        self.assertEqual(event["params"]["signal"], "visibility_changed")
+
+        send(
+            watcher,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "event.unsubscribe",
+                "params": {"subscription": subscription},
+                "token": state["token"],
+            },
+        )
+        self.assertTrue(read(watcher)["result"]["removed"])
+
+        restored = self.raw(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "node.set",
+                    "params": {"path": "/root/Main/Title", "property": "visible", "value": True},
+                    "token": state["token"],
+                }
+            )
+            + "\n"
+        )
+        self.assertTrue(restored["result"]["value"])
+
+        stop = self.run_gai("agent", "stop")
+        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
     def test_editor_mode(self):
         start = self.run_gai("agent", "start", "--editor", timeout=60)
         self.assertEqual(start.returncode, 0, start.stdout + start.stderr)

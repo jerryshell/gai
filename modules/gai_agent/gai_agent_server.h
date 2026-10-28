@@ -6,24 +6,43 @@
 #include "core/object/ref_counted.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
+#include "core/variant/callable.h"
 #include "core/variant/variant.h"
 #include "modules/jsonrpc/jsonrpc.h"
 
 class SceneTree;
 class Node;
+class GaiAgentEventCallable;
 struct MethodInfo;
 struct PropertyInfo;
 
 class GaiAgentServer : public Object {
+	struct Subscription {
+		int id = 0;
+		StringName signal;
+		ObjectID object_id;
+		Callable callable;
+		String path;
+	};
+
+	struct Client {
+		int id = 0;
+		Ref<StreamPeerTCP> peer;
+		Vector<uint8_t> line_buffer;
+		Vector<uint8_t> output;
+		int output_offset = 0;
+		uint64_t last_activity = 0;
+		HashMap<int, Subscription> subscriptions;
+	};
+
 	Ref<TCPServer> server;
-	Ref<StreamPeerTCP> client;
+	HashMap<int, Client *> clients;
+	Client *current_client = nullptr;
+	int next_client_id = 1;
+	int next_subscription_id = 1;
 	JSONRPC rpc;
-	Vector<uint8_t> line_buffer;
-	Vector<uint8_t> output_buffer;
-	int output_offset = 0;
 	String token;
 	int port = 0;
-	uint64_t client_deadline = 0;
 	SceneTree *tree = nullptr;
 	HashMap<ObjectID, Ref<RefCounted>> refs;
 	HashSet<ObjectID> created;
@@ -68,6 +87,10 @@ class GaiAgentServer : public Object {
 	Variant _rpc_input_key(const Variant &p_params);
 	Variant _rpc_input_mouse(const Variant &p_params);
 	Variant _rpc_render_screenshot(const Variant &p_params);
+	Variant _rpc_event_subscribe(const Variant &p_params);
+	Variant _rpc_event_unsubscribe(const Variant &p_params);
+	Variant _rpc_event_list(const Variant &p_params);
+	Variant _rpc_client_list(const Variant &p_params);
 
 	Object *_resolve_handle(const Variant &p_value);
 	String _handle(Object *p_object);
@@ -86,9 +109,24 @@ class GaiAgentServer : public Object {
 	Dictionary _node_info(Node *p_node, const Array &p_properties);
 	Variant _json_value(const Variant &p_value, int p_depth = 0);
 	Node *_node_for(const String &p_path);
-	void _handle(const String &p_line);
+
+	void _accept_client(uint64_t p_now);
+	void _poll_client(Client *p_client, uint64_t p_now);
+	void _read_client(Client *p_client);
+	void _flush_client(Client *p_client);
+	void _drop_client(Client *p_client);
+	void _drop_clients();
+	void _disconnect_subscriptions(Client *p_client);
+	void _prune_subscriptions(Client *p_client);
+	void _send_to(int p_client_id, const String &p_payload);
+	void _queue_event(int p_client_id, int p_subscription, const Array &p_args);
+
+	void _handle(Client *p_client, const String &p_line);
+	void _handle_line(const String &p_line);
+	Variant _process_request(const Dictionary &p_request, const Variant &p_id);
 	void _send(const String &p_payload);
-	void _drop_client();
+
+	friend class GaiAgentEventCallable;
 
 public:
 	GaiAgentServer();

@@ -5,6 +5,7 @@
 #include "core/object/callable_mp.h"
 #include "core/object/message_queue.h"
 #include "core/os/os.h"
+#include "core/templates/hashfuncs.h"
 #include "core/string/print_string.h"
 #include "core/version.h"
 #include "scene/main/node.h"
@@ -14,6 +15,58 @@
 #include "core/variant/variant_utility.h"
 
 #include <cstring>
+
+class GaiAgentEventCallable : public CallableCustom {
+	GaiAgentServer *server = nullptr;
+	int client_id = 0;
+	int subscription_id = 0;
+
+	static bool _compare_equal(const CallableCustom *p_a, const CallableCustom *p_b) {
+		return p_a == p_b;
+	}
+
+	static bool _compare_less(const CallableCustom *p_a, const CallableCustom *p_b) {
+		return p_a < p_b;
+	}
+
+public:
+	GaiAgentEventCallable(GaiAgentServer *p_server, int p_client_id, int p_subscription_id) :
+			server(p_server), client_id(p_client_id), subscription_id(p_subscription_id) {}
+
+	uint32_t hash() const override {
+		return hash_murmur3_one_32((uint32_t)client_id ^ ((uint32_t)subscription_id << 16));
+	}
+
+	String get_as_text() const override {
+		return "gai:event";
+	}
+
+	CompareEqualFunc get_compare_equal_func() const override {
+		return _compare_equal;
+	}
+
+	CompareLessFunc get_compare_less_func() const override {
+		return _compare_less;
+	}
+
+	bool is_valid() const override {
+		return true;
+	}
+
+	ObjectID get_object() const override {
+		return ObjectID();
+	}
+
+	void call(const Variant **p_arguments, int p_argcount, Variant &r_return_value, Callable::CallError &r_call_error) const override {
+		Array arguments;
+		for (int i = 0; i < p_argcount; i++) {
+			arguments.push_back(*p_arguments[i]);
+		}
+		server->_queue_event(client_id, subscription_id, arguments);
+		r_call_error.error = Callable::CallError::CALL_OK;
+	}
+};
+
 
 GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("ping", callable_mp(this, &GaiAgentServer::_rpc_ping));
@@ -54,6 +107,10 @@ GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("input.key", callable_mp(this, &GaiAgentServer::_rpc_input_key));
 	rpc.set_method("input.mouse", callable_mp(this, &GaiAgentServer::_rpc_input_mouse));
 	rpc.set_method("render.screenshot", callable_mp(this, &GaiAgentServer::_rpc_render_screenshot));
+	rpc.set_method("event.subscribe", callable_mp(this, &GaiAgentServer::_rpc_event_subscribe));
+	rpc.set_method("event.unsubscribe", callable_mp(this, &GaiAgentServer::_rpc_event_unsubscribe));
+	rpc.set_method("event.list", callable_mp(this, &GaiAgentServer::_rpc_event_list));
+	rpc.set_method("client.list", callable_mp(this, &GaiAgentServer::_rpc_client_list));
 }
 
 GaiAgentServer::~GaiAgentServer() {
@@ -104,6 +161,7 @@ void GaiAgentServer::stop() {
 		server->stop();
 		server = Ref<TCPServer>();
 	}
+	_drop_clients();
 	for (ObjectID id : created) {
 		Object *object = ObjectDB::get_instance(id);
 		if (object == nullptr) {
@@ -119,14 +177,135 @@ void GaiAgentServer::stop() {
 	}
 	created.clear();
 	refs.clear();
-	_drop_client();
 }
 
-void GaiAgentServer::_drop_client() {
-	client = Ref<StreamPeerTCP>();
-	line_buffer.clear();
-	output_buffer.clear();
-	output_offset = 0;
+namespace {
+constexpr int GAI_MAX_CLIENTS = 8;
+constexpr int GAI_MAX_SUBSCRIPTIONS = 64;
+constexpr int GAI_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+constexpr uint64_t GAI_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+constexpr int GAI_MAX_BATCH = 64;
+constexpr uint64_t GAI_BATCH_DEADLINE_MS = 10000;
+}
+
+void GaiAgentServer::_drop_clients() {
+	Vector<int> ids;
+	for (const KeyValue<int, Client *> &entry : clients) {
+		ids.push_back(entry.key);
+	}
+	for (int id : ids) {
+		Client **found = clients.getptr(id);
+		if (found != nullptr) {
+			_drop_client(*found);
+		}
+	}
+	clients.clear();
+	current_client = nullptr;
+}
+
+void GaiAgentServer::_drop_client(Client *p_client) {
+	if (p_client == nullptr) {
+		return;
+	}
+	_disconnect_subscriptions(p_client);
+	if (p_client->peer.is_valid()) {
+		p_client->peer->disconnect_from_host();
+	}
+	if (current_client == p_client) {
+		current_client = nullptr;
+	}
+	clients.erase(p_client->id);
+	memdelete(p_client);
+}
+
+void GaiAgentServer::_disconnect_subscriptions(Client *p_client) {
+	for (KeyValue<int, Subscription> &entry : p_client->subscriptions) {
+		Subscription &subscription = entry.value;
+		Object *object = ObjectDB::get_instance(subscription.object_id);
+		if (object != nullptr && subscription.callable.is_valid() && object->is_connected(subscription.signal, subscription.callable)) {
+			object->disconnect(subscription.signal, subscription.callable);
+		}
+	}
+	p_client->subscriptions.clear();
+}
+
+void GaiAgentServer::_prune_subscriptions(Client *p_client) {
+	Vector<int> removed;
+	for (const KeyValue<int, Subscription> &entry : p_client->subscriptions) {
+		if (ObjectDB::get_instance(entry.value.object_id) == nullptr) {
+			removed.push_back(entry.key);
+		}
+	}
+	for (int subscription_id : removed) {
+		Subscription *subscription = p_client->subscriptions.getptr(subscription_id);
+		if (subscription == nullptr) {
+			continue;
+		}
+		Dictionary params;
+		params["subscription"] = subscription_id;
+		params["signal"] = String(subscription->signal);
+		params["handle"] = String::num_uint64((uint64_t)subscription->object_id);
+		params["path"] = subscription->path;
+		params["closed"] = true;
+		const int client_id = p_client->id;
+		p_client->subscriptions.erase(subscription_id);
+		Dictionary notification;
+		notification["jsonrpc"] = "2.0";
+		notification["method"] = "event";
+		notification["params"] = params;
+		_send_to(client_id, JSON::stringify(notification) + "\n");
+		if (!clients.has(client_id)) {
+			return;
+		}
+	}
+}
+
+void GaiAgentServer::_accept_client(uint64_t p_now) {
+	while (server.is_valid() && server->is_connection_available()) {
+		Ref<StreamPeerTCP> incoming = server->take_connection();
+		if (incoming.is_null()) {
+			break;
+		}
+		if (clients.size() >= GAI_MAX_CLIENTS) {
+			incoming->disconnect_from_host();
+			continue;
+		}
+		Client *client = memnew(Client);
+		client->id = next_client_id++;
+		client->peer = incoming;
+		client->last_activity = p_now;
+		clients[client->id] = client;
+	}
+}
+
+void GaiAgentServer::_poll_client(Client *p_client, uint64_t p_now) {
+	if (p_client == nullptr || p_client->peer.is_null()) {
+		_drop_client(p_client);
+		return;
+	}
+	const int client_id = p_client->id;
+	p_client->peer->poll();
+	if (p_client->peer->get_status() != StreamPeerTCP::STATUS_CONNECTED) {
+		_drop_client(p_client);
+		return;
+	}
+	if (p_client->subscriptions.is_empty() && p_now - p_client->last_activity > GAI_IDLE_TIMEOUT_MS) {
+		_drop_client(p_client);
+		return;
+	}
+	_prune_subscriptions(p_client);
+	if (!clients.has(client_id)) {
+		return;
+	}
+	_flush_client(p_client);
+	if (!clients.has(client_id)) {
+		return;
+	}
+	_read_client(p_client);
+	if (!clients.has(client_id)) {
+		return;
+	}
+	_flush_client(p_client);
 }
 
 void GaiAgentServer::poll() {
@@ -141,131 +320,244 @@ void GaiAgentServer::poll() {
 		}
 	}
 	const uint64_t now = OS::get_singleton()->get_ticks_msec();
-	while (server->is_connection_available()) {
-		Ref<StreamPeerTCP> incoming = server->take_connection();
-		if (client.is_null() || (line_buffer.is_empty() && output_buffer.is_empty())) {
-			_drop_client();
-			client = incoming;
-			client_deadline = now + 10000;
-		} else {
-			incoming->disconnect_from_host();
+	_accept_client(now);
+	Vector<int> ids;
+	for (const KeyValue<int, Client *> &entry : clients) {
+		ids.push_back(entry.key);
+	}
+	for (int id : ids) {
+		Client **found = clients.getptr(id);
+		if (found != nullptr) {
+			_poll_client(*found, now);
 		}
 	}
-	if (client.is_null()) {
-		return;
-	}
-	client->poll();
-	if (client->get_status() != StreamPeerTCP::STATUS_CONNECTED || now > client_deadline) {
-		_drop_client();
-		return;
-	}
+}
 
-	if (!output_buffer.is_empty()) {
-		while (output_offset < output_buffer.size()) {
-			int sent = 0;
-			const Error err = client->put_partial_data(
-					output_buffer.ptr() + output_offset,
-					output_buffer.size() - output_offset,
-					sent);
-			if (err == ERR_BUSY) {
-				return;
-			}
-			if (err != OK) {
-				_drop_client();
-				return;
-			}
-			if (sent <= 0) {
-				return;
-			}
-			output_offset += sent;
-		}
-		_drop_client();
-		return;
-	}
-
-	while (client.is_valid() && client->get_available_bytes() > 0) {
+void GaiAgentServer::_read_client(Client *p_client) {
+	const int client_id = p_client->id;
+	int handled = 0;
+	while (p_client->peer.is_valid() && p_client->peer->get_available_bytes() > 0 && handled < 32) {
 		uint8_t byte = 0;
 		int read = 0;
-		if (client->get_partial_data(&byte, 1, read) != OK || read != 1) {
+		if (p_client->peer->get_partial_data(&byte, 1, read) != OK || read != 1) {
 			break;
 		}
+		if (byte == '\r') {
+			continue;
+		}
 		if (byte == '\n') {
-			if (!line_buffer.is_empty()) {
-				const String line = String::utf8((const char *)line_buffer.ptr(), line_buffer.size()).strip_edges();
-				line_buffer.clear();
+			if (!p_client->line_buffer.is_empty()) {
+				const String line = String::utf8((const char *)p_client->line_buffer.ptr(), p_client->line_buffer.size()).strip_edges();
+				p_client->line_buffer.clear();
 				if (!line.is_empty()) {
-					_handle(line);
-					if (client.is_null() || !output_buffer.is_empty()) {
-						line_buffer.clear();
+					handled++;
+					p_client->last_activity = OS::get_singleton()->get_ticks_msec();
+					_handle(p_client, line);
+					if (!clients.has(client_id)) {
 						return;
 					}
 				}
 			}
 			continue;
 		}
-		if (byte == '\r') {
-			continue;
-		}
-		line_buffer.push_back(byte);
-		if (line_buffer.size() > 65536) {
-			line_buffer.clear();
-			_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Request too large")) + "\n");
+		p_client->line_buffer.push_back(byte);
+		if (p_client->line_buffer.size() > 65536) {
+			p_client->line_buffer.clear();
+			_send_to(p_client->id, JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Request too large")) + "\n");
 			return;
 		}
 	}
 }
 
-void GaiAgentServer::_handle(const String &p_line) {
+void GaiAgentServer::_flush_client(Client *p_client) {
+	if (p_client == nullptr || p_client->peer.is_null()) {
+		return;
+	}
+	while (p_client->output_offset < p_client->output.size()) {
+		int sent = 0;
+		const Error err = p_client->peer->put_partial_data(
+				p_client->output.ptr() + p_client->output_offset,
+				p_client->output.size() - p_client->output_offset,
+				sent);
+		if (err == ERR_BUSY) {
+			return;
+		}
+		if (err != OK) {
+			_drop_client(p_client);
+			return;
+		}
+		if (sent <= 0) {
+			return;
+		}
+		p_client->output_offset += sent;
+	}
+	if (p_client->output_offset > 0) {
+		p_client->output.clear();
+		p_client->output_offset = 0;
+	}
+}
+
+void GaiAgentServer::_handle(Client *p_client, const String &p_line) {
+	if (p_client == nullptr) {
+		return;
+	}
+	Client *previous = current_client;
+	current_client = p_client;
+	_handle_line(p_line);
+	current_client = previous;
+}
+
+void GaiAgentServer::_handle_line(const String &p_line) {
 	JSON json;
 	if (json.parse(p_line) != OK) {
 		_send(JSON::stringify(rpc.make_response_error(JSONRPC::PARSE_ERROR, "Parse error")) + "\n");
 		return;
 	}
 	const Variant data = json.get_data();
-	if (data.get_type() != Variant::DICTIONARY) {
-		_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Invalid request")) + "\n");
+	if (data.get_type() == Variant::DICTIONARY) {
+		const Dictionary request = data;
+		const Variant id = request.get("id", Variant());
+		if (String(request.get("token", "")) != token) {
+			_send(JSON::stringify(rpc.make_response_error(-32001, "Unauthorized", id)) + "\n");
+			return;
+		}
+		const Variant response = _process_request(request, id);
+		if (response.get_type() == Variant::NIL) {
+			return;
+		}
+		_send(JSON::stringify(response) + "\n");
 		return;
 	}
 
-	const Dictionary request = data;
-	const Variant id = request.get("id", Variant());
-	if (String(request.get("token", "")) != token) {
-		_send(JSON::stringify(rpc.make_response_error(-32001, "Unauthorized", id)) + "\n");
-		return;
-	}
-
-	const String response = rpc.process_string(p_line);
-	if (response.is_empty()) {
-		return;
-	}
-
-	JSON response_json;
-	if (response_json.parse(response) == OK) {
-		const Variant response_data = response_json.get_data();
-		if (response_data.get_type() == Variant::DICTIONARY) {
-			const Dictionary response_dict = response_data;
-			if (response_dict.has("result") && response_dict["result"].get_type() == Variant::DICTIONARY) {
-				const Dictionary result = response_dict["result"];
-				if (result.has("$gai_error")) {
-					_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_PARAMS, String(result["$gai_error"]), id)) + "\n");
-					return;
+	if (data.get_type() == Variant::ARRAY) {
+		const Array batch = data;
+		if (batch.is_empty()) {
+			_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Invalid Request")) + "\n");
+			return;
+		}
+		if (batch.size() > GAI_MAX_BATCH) {
+			_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Batch too large")) + "\n");
+			return;
+		}
+		const uint64_t started = OS::get_singleton()->get_ticks_msec();
+		Array responses;
+		for (int index = 0; index < batch.size(); index++) {
+			if (OS::get_singleton()->get_ticks_msec() - started > GAI_BATCH_DEADLINE_MS) {
+				for (int remaining = index; remaining < batch.size(); remaining++) {
+					const Variant item = batch[remaining];
+					if (item.get_type() != Variant::DICTIONARY) {
+						continue;
+					}
+					const Dictionary request = item;
+					if (!request.has("id")) {
+						continue;
+					}
+					responses.push_back(rpc.make_response_error(-32000, "Batch deadline exceeded", request["id"]));
 				}
+				break;
+			}
+			const Variant item = batch[index];
+			if (item.get_type() != Variant::DICTIONARY) {
+				responses.push_back(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Invalid Request"));
+				continue;
+			}
+			const Dictionary request = item;
+			const Variant id = request.get("id", Variant());
+			if (String(request.get("token", "")) != token) {
+				responses.push_back(rpc.make_response_error(-32001, "Unauthorized", id));
+				continue;
+			}
+			const Variant response = _process_request(request, id);
+			if (response.get_type() != Variant::NIL) {
+				responses.push_back(response);
+			}
+		}
+		if (!responses.is_empty()) {
+			_send(JSON::stringify(responses) + "\n");
+		}
+		return;
+	}
+
+	_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Invalid request")) + "\n");
+}
+
+Variant GaiAgentServer::_process_request(const Dictionary &p_request, const Variant &p_id) {
+	const Variant response = rpc.process_action(p_request);
+	if (response.get_type() == Variant::DICTIONARY) {
+		const Dictionary response_dict = response;
+		if (response_dict.has("result") && response_dict["result"].get_type() == Variant::DICTIONARY) {
+			const Dictionary result = response_dict["result"];
+			if (result.has("$gai_error")) {
+				return rpc.make_response_error(JSONRPC::INVALID_PARAMS, String(result["$gai_error"]), p_id);
 			}
 		}
 	}
-	_send(response + "\n");
+	return response;
 }
 
 void GaiAgentServer::_send(const String &p_payload) {
-	if (client.is_null()) {
+	if (current_client == nullptr) {
 		return;
 	}
-	const CharString utf8 = p_payload.utf8();
-	output_buffer.resize(utf8.length());
-	if (utf8.length() > 0) {
-		memcpy(output_buffer.ptrw(), utf8.get_data(), utf8.length());
+	_send_to(current_client->id, p_payload);
+}
+
+void GaiAgentServer::_send_to(int p_client_id, const String &p_payload) {
+	Client **found = clients.getptr(p_client_id);
+	if (found == nullptr) {
+		return;
 	}
-	output_offset = 0;
+	Client *client = *found;
+	const CharString utf8 = p_payload.utf8();
+	const int old_size = client->output.size();
+	client->output.resize(old_size + utf8.length());
+	if (utf8.length() > 0) {
+		memcpy(client->output.ptrw() + old_size, utf8.get_data(), utf8.length());
+	}
+	if (client->output.size() > GAI_MAX_OUTPUT_BYTES) {
+		print_error("gai_agent: client output limit reached; dropping client " + itos(client->id));
+		_drop_client(client);
+	}
+}
+
+void GaiAgentServer::_queue_event(int p_client_id, int p_subscription, const Array &p_args) {
+	Client **found = clients.getptr(p_client_id);
+	if (found == nullptr) {
+		return;
+	}
+	Client *client = *found;
+	Subscription *subscription = client->subscriptions.getptr(p_subscription);
+	if (subscription == nullptr) {
+		return;
+	}
+	Object *object = ObjectDB::get_instance(subscription->object_id);
+	Dictionary params;
+	params["subscription"] = p_subscription;
+	params["signal"] = String(subscription->signal);
+	if (object == nullptr) {
+		params["closed"] = true;
+		client->subscriptions.erase(p_subscription);
+		Dictionary notification;
+		notification["jsonrpc"] = "2.0";
+		notification["method"] = "event";
+		notification["params"] = params;
+		_send_to(p_client_id, JSON::stringify(notification) + "\n");
+		return;
+	}
+	params["handle"] = _handle(object);
+	if (Node *node = Object::cast_to<Node>(object)) {
+		params["path"] = String(node->get_path());
+	}
+	Array values;
+	for (int i = 0; i < p_args.size(); i++) {
+		values.push_back(_json_value(p_args[i]));
+	}
+	params["args"] = values;
+	Dictionary notification;
+	notification["jsonrpc"] = "2.0";
+	notification["method"] = "event";
+	notification["params"] = params;
+	_send_to(p_client_id, JSON::stringify(notification) + "\n");
 }
 
 Node *GaiAgentServer::_node_for(const String &p_path) {
@@ -360,6 +652,128 @@ Variant GaiAgentServer::_rpc_ping(const Variant &p_params) {
 	result["pong"] = true;
 	result["engine"] = String(VERSION_FULL_NAME);
 	result["pid"] = OS::get_singleton()->get_process_id();
+	result["clients"] = clients.size();
+	if (current_client != nullptr) {
+		result["client"] = current_client->id;
+	}
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_event_subscribe(const Variant &p_params) {
+	if (p_params.get_type() != Variant::DICTIONARY) {
+		return _error("params must be an object");
+	}
+	if (current_client == nullptr) {
+		return _error("no client");
+	}
+	const Dictionary params = p_params;
+	const String signal_name = params.get("signal", "");
+	if (signal_name.is_empty()) {
+		return _error("signal is required");
+	}
+	Object *object = nullptr;
+	if (params.has("handle")) {
+		object = _resolve_handle(params["handle"]);
+	} else if (params.has("path")) {
+		object = _node_for(String(params["path"]));
+	} else {
+		return _error("handle or path is required");
+	}
+	if (object == nullptr) {
+		return _error("object not found");
+	}
+	const StringName signal = StringName(signal_name);
+	if (!object->has_signal(signal)) {
+		return _error("signal not found: " + signal_name);
+	}
+	if (current_client->subscriptions.size() >= GAI_MAX_SUBSCRIPTIONS) {
+		return _error("too many subscriptions");
+	}
+	const int subscription_id = next_subscription_id++;
+	Callable callable = Callable(memnew(GaiAgentEventCallable(this, current_client->id, subscription_id)));
+	const Error error = object->connect(signal, callable);
+	if (error != OK) {
+		return _error("cannot connect signal: " + itos(error));
+	}
+	Subscription subscription;
+	subscription.id = subscription_id;
+	subscription.signal = signal;
+	subscription.object_id = object->get_instance_id();
+	subscription.callable = callable;
+	if (Node *node = Object::cast_to<Node>(object)) {
+		subscription.path = String(node->get_path());
+	}
+	current_client->subscriptions[subscription_id] = subscription;
+	Dictionary result;
+	result["subscription"] = subscription_id;
+	result["signal"] = String(signal);
+	result["handle"] = _handle(object);
+	result["path"] = subscription.path;
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_event_unsubscribe(const Variant &p_params) {
+	if (p_params.get_type() != Variant::DICTIONARY) {
+		return _error("params must be an object");
+	}
+	if (current_client == nullptr) {
+		return _error("no client");
+	}
+	const Dictionary params = p_params;
+	const int subscription_id = params.get("subscription", -1);
+	Subscription *found = current_client->subscriptions.getptr(subscription_id);
+	if (found == nullptr) {
+		return _error("subscription not found");
+	}
+	const Subscription subscription = *found;
+	Object *object = ObjectDB::get_instance(subscription.object_id);
+	if (object != nullptr && object->is_connected(subscription.signal, subscription.callable)) {
+		object->disconnect(subscription.signal, subscription.callable);
+	}
+	current_client->subscriptions.erase(subscription_id);
+	Dictionary result;
+	result["subscription"] = subscription_id;
+	result["removed"] = true;
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_event_list(const Variant &p_params) {
+	(void)p_params;
+	Array result;
+	if (current_client == nullptr) {
+		return result;
+	}
+	for (const KeyValue<int, Subscription> &entry : current_client->subscriptions) {
+		const Subscription &subscription = entry.value;
+		Dictionary info;
+		info["subscription"] = subscription.id;
+		info["signal"] = String(subscription.signal);
+		info["handle"] = String::num_uint64((uint64_t)subscription.object_id);
+		info["path"] = subscription.path;
+		Object *object = ObjectDB::get_instance(subscription.object_id);
+		info["closed"] = object == nullptr;
+		if (object != nullptr) {
+			info["handle"] = _handle(object);
+		}
+		result.push_back(info);
+	}
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_client_list(const Variant &p_params) {
+	(void)p_params;
+	Array result;
+	const uint64_t now = OS::get_singleton()->get_ticks_msec();
+	for (const KeyValue<int, Client *> &entry : clients) {
+		const Client *client = entry.value;
+		Dictionary info;
+		info["id"] = client->id;
+		info["subscriptions"] = client->subscriptions.size();
+		info["output_bytes"] = client->output.size() - client->output_offset;
+		info["idle_ms"] = now > client->last_activity ? now - client->last_activity : 0;
+		info["current"] = client == current_client;
+		result.push_back(info);
+	}
 	return result;
 }
 

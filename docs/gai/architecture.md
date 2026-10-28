@@ -65,6 +65,9 @@ engine agent bridge exposes the engine's own reflection and object handles:
 - scene, node, resource, project, run, input, and screenshot methods;
 - runtime and editor modes.
 
+`bin/gai mcp` serves the same bridge over MCP on stdin/stdout. It is an adapter
+process, not engine code.
+
 An agent needs no new wrapper when the engine exposes a feature through
 `ClassDB` or a singleton. It discovers with `classdb.classes`, inspects with
 `object.properties/methods/signals`, and calls with `object.call`. The design is
@@ -72,10 +75,10 @@ in `features/agent-bridge.md`.
 
 ## Build gate
 
-A deep fork must build. `docs/gai/build.md` has the commands. `bin/gai check`
+A deep fork must build. `bin/gai build` builds the engine and `bin/gai check`
 tests the game, not the engine. An engine feature is not done until the engine
-builds and its tests pass. The current CI does not build the engine yet. That is
-the next infrastructure piece.
+builds and its tests pass. The `engine` CI job builds the engine, runs the
+bridge, MCP, game, and Steam tests, and checks that the binary is current.
 
 ## Branding
 
@@ -86,8 +89,9 @@ UI branding is a feature, not a one-off edit.
 ## What check proves
 
 Godot exits 0 on script errors. `bin/gai check` imports assets, parses every
-script, and runs the main scene. It also refuses an engine or `version.py` that
-does not match the base tag. This is the game gate.
+script, runs the main scene, and runs `game/tests` when the runner exists. It
+also refuses an engine or `version.py` that does not match the base tag. This is
+the game gate.
 
 ## Limits
 
@@ -96,9 +100,9 @@ does not match the base tag. This is the game gate.
 - The .NET web export is planned, not implemented. It needs a custom engine
   build.
 - The agent bridge exposes native runtime and editor reflection. GDScript
-  `class_name` classes are reached through handles. Event streams, signal
-  connections, export helpers, and multiple clients are planned. Screenshots
-  need a display.
+  `class_name` classes are reached through handles. It supports up to 8 clients
+  and signal event subscriptions. Event replay, batch requests, export helpers,
+  and headless screenshots are not implemented.
 - The bridge token grants full local access, including `OS.execute`. It is not a
   sandbox.
 - Steam is a native module. The Steamworks SDK is installed separately and is

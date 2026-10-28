@@ -21,6 +21,8 @@ jobs:
         run: python3 bin/gai upstream report
       - name: Test the upstream tools
         run: python3 tests/test_upstream.py
+      - name: Test the build command
+        run: python3 tests/test_build.py
 
   game:
     runs-on: ubuntu-latest
@@ -47,10 +49,32 @@ jobs:
           sudo apt-get install -y build-essential pkg-config libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev libfontconfig1-dev libdbus-1-dev libwayland-dev libenet-dev lld scons
       - name: Install the Steamworks SDK
         run: python3 bin/gai steam sdk --download
+      - name: Cache SCons objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin/obj
+            .sconsign.dblite
+            .sconsign5.dblite
+          key: ${{ runner.os }}-scons-${{ hashFiles('SConstruct', 'SCsub', 'methods.py', 'version.py', 'modules/gai_agent/**', 'platform/**/SCsub', 'modules/**/config.py') }}
+          restore-keys: |
+            ${{ runner.os }}-scons-
       - name: Build the engine
-        run: scons platform=linuxbsd target=editor dev_build=no accesskit=no linker=lld -j4
+        run: python3 bin/gai build --force --jobs 4
+      - name: Check the build is current
+        run: python3 bin/gai build --check
       - name: Copy the Steam runtime library
         run: python3 bin/gai steam runtime
+      - name: Check the starter game with the built engine
+        run: python3 bin/gai check
+      - name: Test the build command
+        run: python3 tests/test_build.py
+      - name: Test the MCP adapter
+        run: python3 tests/test_mcp.py
+      - name: Test the check gate
+        run: python3 tests/test_check.py
+      - name: Test the game tests
+        run: python3 tests/test_game_tests.py
       - name: Test the agent bridge
         run: python3 tests/test_agent.py
       - name: Test the Steam module

@@ -1,9 +1,10 @@
 # Build the engine
 
-The repository is a Godot source tree. `bin/gai bootstrap` builds the gai engine
-from source by default. Build it directly when you change engine code or want to
-run SCons yourself. The official fallback is for machines that cannot build; it
-has no gai display name and no agent bridge.
+The repository is a Godot source tree. `bin/gai build` builds the gai engine
+from source. It rebuilds when an engine source file is newer than the editor
+binary. `bin/gai bootstrap` uses the same check on the first run, then runs the
+game check. The official fallback is for machines that cannot build; it has no
+gai display name and no agent bridge.
 
 ## Requirements
 
@@ -17,6 +18,19 @@ https://docs.godotengine.org/en/4.7/contributing/development/compiling/
 ## Build
 
 From the repository root:
+
+```sh
+bin/gai build
+```
+
+`--check` exits 0 when the binary is current and 1 when a rebuild is needed.
+`--force` rebuilds even when it is current. `--dry-run` prints the SCons command.
+`--jobs N` overrides the memory-aware default. The command keeps the platform
+flags in one place; on Linux with `lld` installed it adds `linker=lld` and
+`accesskit=no`. A build removes `game/.godot`; run `bin/gai check` to import
+again.
+
+To run SCons yourself:
 
 ```sh
 scons platform=linuxbsd target=editor dev_build=no -j$(nproc)

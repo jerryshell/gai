@@ -104,6 +104,42 @@ For a one-off event, use `_unhandled_input(event: InputEvent)` and
 
 See `references/errors.md` for common messages.
 
+## Test gameplay
+
+`bin/gai check` runs `game/tests` when `game/tests/run_tests.gd` exists. Use
+`bin/gai test --filter <name>` while you iterate.
+
+A test extends the base class by path:
+
+```gdscript
+extends "res://tests/gai_test_case.gd"
+
+func test_player_starts_alive() -> void:
+	var player := auto_free(preload("res://player.tscn").instantiate())
+	assert_eq(player.health, 3)
+
+func test_jump_emits_signal() -> void:
+	var player := auto_free(preload("res://player.tscn").instantiate())
+	watch_signal(player, &"jumped")
+	await frames(2)
+	assert_signal_emitted(player, &"jumped")
+```
+
+- A `test_*` method runs once. Assertions record a failure and return false;
+  return early when a later step needs the value.
+- Use the base class assertions, not GDScript's `assert()`.
+- `before_each()` and `after_each()` run around each test.
+- `auto_free(node)` adds the node to the tree and frees it after the test.
+- `await frames(n)`, `await physics_frames(n)`, and `await seconds(s)` wait.
+- `await wait_until(callable)` waits for a condition; assert on its result.
+- `pending("reason")` marks a test pending; call `return` after it.
+- Input: `action_down/up`, `key_down/up`, `mouse_down/up`, `click`. The helpers
+  send events and update `Input`; `_gai_reset` releases them.
+- Doubles: `var player = double("res://player.gd")`, then
+  `stub(player, "take_damage", 0)` and `assert_called(player, "take_damage", [2])`.
+  A `Node` double needs `auto_free`.
+- Do not override `_gai_*` methods. Read `docs/gai/testing.md`.
+
 ## Do not
 
 - Do not hand-edit `game/.godot/`.

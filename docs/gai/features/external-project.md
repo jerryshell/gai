@@ -1,11 +1,13 @@
 # Games outside the repository
 
 gai can work on a Godot project that lives outside this clone. Set `GAI_GAME` to
-the project directory. `check`, `run`, `editor`, `agent`, and `export web` use
-it. Runtime state goes to `<game>/.gai`, so the engine repository stays clean.
+the project directory. `check`, `test`, `run`, `editor`, `agent`, `mcp`, and
+`export web` use it. Runtime state goes to `<game>/.gai`, so the engine
+repository stays clean.
 
 ```sh
 GAI_GAME=/path/to/game bin/gai check
+GAI_GAME=/path/to/game bin/gai test
 GAI_GAME=/path/to/game bin/gai check --scene res://level.tscn
 GAI_GAME=/path/to/game bin/gai agent start
 GAI_GAME=/path/to/game bin/gai export web --clean --gzip

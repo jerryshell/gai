@@ -67,6 +67,8 @@ agent can discover and call it. GDScript `class_name` classes are not in
 | `run` | `status`, `pause`, `resume`, `step`, `time_scale`, `quit` | `step` restores the previous pause state. Guarded in editor mode. |
 | `input` | `action`, `key`, `mouse` | Injects input events. Guarded in editor mode. |
 | `render` | `screenshot` | Needs a display; headless returns an error. |
+| `event` | `subscribe`, `unsubscribe`, `list` | Signal subscriptions. A subscription needs a persistent connection. |
+| `client` | `list` | Connected clients, their subscriptions, and their output backlog. |
 
 Errors are JSON-RPC errors. A normal result dictionary that contains an `error`
 key is preserved and returned as data.
@@ -75,6 +77,54 @@ In editor mode, `scene.tree` returns the edited scene when one is open. Its path
 are editor-internal. Prefer handles from `EditorInterface.get_edited_scene_root`.
 `run.*`, `scene.change`, and `input.*` are refused without `force: true` so an
 agent cannot quit or pause the editor by accident.
+
+## Events
+
+A client can subscribe to a signal and keep the connection open. Events are
+JSON-RPC notifications without an `id`:
+
+```json
+{"jsonrpc": "2.0", "id": 1, "method": "event.subscribe",
+ "params": {"path": "/root/Main/Title", "signal": "visibility_changed"},
+ "token": "<token>"}
+```
+
+The response carries a subscription id. The server then sends:
+
+```json
+{"jsonrpc": "2.0", "method": "event",
+ "params": {"subscription": 1, "signal": "visibility_changed",
+            "handle": "123", "path": "/root/Main/Title", "args": []}}
+```
+
+- Pass `handle` or `path` to select the object, and `signal` to name the signal.
+- `event.unsubscribe` with `{"subscription": 1}` removes it.
+- `event.list` returns this client's subscriptions.
+- `client.list` returns connected clients, subscription counts, and output backlog.
+- A freed object sends `"closed": true` and removes the subscription.
+- Signal arguments use the same JSON conversion as results. A value that is not
+  JSON becomes Godot text, such as `Vector2(0, 0)`.
+- A subscription needs a persistent connection. `bin/gai agent call` opens one
+  connection per call; use `bin/gai agent watch` or a raw socket for events.
+- Signals must be emitted on the main thread. A signal emitted from a worker
+  thread can race with the bridge queues.
+
+```sh
+bin/gai agent watch --path /root/Main/Title --signal visibility_changed
+bin/gai agent watch --handle 123 --signal ready --count 1
+```
+
+## Batch requests
+
+A line can be a JSON-RPC array. Every element carries its own token and its own
+`id`. The reply is one JSON array of responses; notifications are omitted.
+
+- At most 64 elements. A larger batch gets one invalid-request error.
+- The server spends at most 10 seconds on one batch. Remaining requests with an
+  `id` get `-32000 Batch deadline exceeded` without running.
+- An empty array is invalid.
+- A single request still runs synchronously on the main thread. The batch
+  deadline cannot interrupt the request that is already running.
 
 ## CLI
 
@@ -86,20 +136,26 @@ bin/gai agent call classdb.class '{"name":"Node2D"}'
 bin/gai agent call object.singleton '{"name":"PhysicsServer3D"}'
 bin/gai agent call object.methods '{"handle":"<handle>"}'
 bin/gai agent call object.call '{"handle":"<handle>","method":"get_class","args":[]}'
+bin/gai agent watch --path /root/Main/Title --signal visibility_changed
 bin/gai agent log
 bin/gai agent stop
 ```
 
 `bin/gai agent log` tails the game output. `bin/gai agent call` is the generic
 path: any bridge method can be called without a new CLI command. `tree`, `get`,
-and `set` remain path-based sugar.
+and `set` remain path-based sugar. `bin/gai agent watch` keeps one connection
+open, prints each event notification as one JSON line on stdout, and writes its
+status to stderr. `--count N` stops after N events.
 
 ## Security
 
 - A random token per session. It is stored in `.gai/agent.json` with mode 600.
 - Bind 127.0.0.1 only.
-- One client at a time. A request must finish within 10 seconds. An idle client
-  is replaced; an extra connection during a request is dropped.
+- Up to 8 clients. Each request must carry the token. A request runs on the main
+  thread, so it blocks the other clients while it runs; keep calls short.
+- One client can hold up to 64 subscriptions. A client without subscriptions is
+  dropped after 10 minutes idle. A client whose output backlog passes 4 MiB is
+  dropped.
 - `agent stop` checks the process start time and engine path before signalling.
 - Full access is intentional. The token holder can call `OS.execute`, write
   arbitrary paths through `resource.save` or `render.screenshot`, and change the
@@ -111,16 +167,16 @@ and `set` remain path-based sugar.
 python3 tests/test_agent.py
 ```
 
-Five tests: scene get/set and auth, capability surface, editor mode, concurrent
-start, and foreign PID safety. They need a source build. The `engine` CI job
-builds the engine and runs them. A local run needs a binary built from the
-current HEAD.
+Seven tests: scene get/set and auth, capability surface, editor mode, concurrent
+start, foreign PID safety, multi-client event delivery, and batch requests. They
+need a source build. The `engine` CI job builds the engine and runs them. A local
+run needs a binary built from the current HEAD.
 
 ## Not yet
 
-- Event subscriptions and streaming. The agent polls. Signals can be listed
-  and emitted, but not connected or awaited.
-- Multiple clients and batch requests.
+- Event replay and history. A client that disconnects loses its subscriptions.
+- A per-request deadline or task id. A long single request blocks all clients
+  until it returns; the batch deadline only bounds the next batch item.
 - Export helpers. Export internals are reachable through editor objects when
   they are exposed as singletons or objects.
 - Screenshots in headless CI. Use `--display` with a virtual display.

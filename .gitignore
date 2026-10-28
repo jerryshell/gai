@@ -412,6 +412,7 @@ $RECYCLE.BIN/
 !/bin/
 /bin/*
 !/bin/gai
+!/bin/gai_mcp.py
 
 
 # Agent bridge session

@@ -244,6 +244,10 @@ Variant GaiAgentServer::_rpc_api_methods(const Variant &p_params) {
 		"input.key",
 		"input.mouse",
 		"render.screenshot",
+		"event.subscribe",
+		"event.unsubscribe",
+		"event.list",
+		"client.list",
 	};
 	Array methods;
 	for (const char *name : names) {

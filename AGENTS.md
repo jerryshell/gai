@@ -31,8 +31,8 @@ you. Do not present a long plan before the first playable change.
 - A game task does not edit the fork's front-door files (`README.md`,
   `version.py`, `.gitignore`) by default.
 - Do not commit `game/.godot/`, `.gai/bin/`, or `.gai/logs/`.
-- After an engine change, rebuild with `bin/gai bootstrap` and run `bin/gai check`.
-  Read `docs/gai/upstream.md` for the merge risk.
+- After an engine change, run `bin/gai build` and `bin/gai check`. Read
+  `docs/gai/upstream.md` for the merge risk.
 
 ## Commands
 
@@ -40,12 +40,16 @@ Run these from the repository root.
 
 | Command | What it does |
 | --- | --- |
-| `bin/gai bootstrap` | Builds the gai engine if needed, then checks the game. Use this on the first run. |
+| `bin/gai bootstrap` | Builds the gai engine when it is missing or stale, then checks the game. Use this on the first run. |
+| `bin/gai build` | Builds the gai engine from source. `--check` tests freshness; `--force` rebuilds; `--dry-run` prints the command. |
 | `bin/gai doctor` | Checks the engine, the game, features, and the upstream base. |
-| `bin/gai check` | Imports assets, parses every `.gd` file, runs the main scene headless, and fails on errors. |
+| `bin/gai check` | Imports assets, parses every `.gd` file, runs the main scene and `game/tests`, and fails on errors. |
+| `bin/gai test` | Runs `game/tests` headlessly. `check` runs it by default; `--no-tests` skips it. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
 | `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. |
+| `bin/gai agent watch` | Streams signal events from the bridge; pass `--path` or `--handle` and `--signal`. |
+| `bin/gai mcp` | Serves the running bridge over MCP stdio. Add `--start` to start the game. |
 | `bin/gai export web` | Exports a web build. Needs a `Web` preset and export templates. |
 | `bin/gai steam status` | Shows the Steam module, the SDK, and the runtime library. |
 | `bin/gai engine install` | Downloads the official fallback engine into `.gai/bin/`. It has no gai features. |
@@ -67,6 +71,7 @@ bin/gai agent call classdb.classes '{}'
 bin/gai agent call classdb.class '{"name":"Node2D"}'
 bin/gai agent call object.singleton '{"name":"PhysicsServer3D"}'
 bin/gai agent call object.call '{"handle":"<handle>","method":"get_class","args":[]}'
+bin/gai agent watch --path /root/Main/Title --signal visibility_changed
 bin/gai agent stop
 ```
 
@@ -83,6 +88,9 @@ dictionary. Pass an object as `{"$handle": "<id>"}`. An unknown handle is an
 error. `object.free` only frees handles the bridge created; use `node.delete` for
 tree nodes.
 
+For an MCP client, `bin/gai mcp` serves the same bridge over stdio. Read
+`docs/gai/mcp.md`.
+
 `agent start --editor` starts the editor, where `EditorInterface` is a
 singleton. In editor mode `run.*`, `scene.change`, and `input.*` need
 `force: true`; `scene.tree` returns the edited scene when one is open. Add
@@ -91,11 +99,13 @@ singleton. In editor mode `run.*`, `scene.change`, and `input.*` need
 
 ## A game outside this repository
 
-Set `GAI_GAME` to a Godot project outside this clone. `check`, `run`, `editor`,
-`agent`, and `export web` use it. Runtime state goes to `<game>/.gai`.
+Set `GAI_GAME` to a Godot project outside this clone. `check`, `test`, `run`,
+`editor`, `agent`, `mcp`, and `export web` use it. Runtime state goes to
+`<game>/.gai`.
 
 ```sh
 GAI_GAME=/path/to/game bin/gai check
+GAI_GAME=/path/to/game bin/gai test
 GAI_GAME=/path/to/game bin/gai check --scene res://level.tscn
 GAI_GAME=/path/to/game bin/gai export web --clean --gzip
 ```
@@ -130,8 +140,10 @@ rejects LLM-written patches upstream; keep changes local.
 
 1. Read the task and inspect `game/`.
 2. Make the smallest change that completes it.
-3. Run `bin/gai check`. It must exit 0.
-4. If it fails, read `.gai/logs/check.log`, fix the first error, and run it again.
+3. Add a test in `game/tests/test_*.gd` when the change has behavior a run does
+   not show. Extend `res://tests/gai_test_case.gd`.
+4. Run `bin/gai check`. It must exit 0.
+5. If it fails, read `.gai/logs/check.log`, fix the first error, and run it again.
 
 Godot exits 0 when a scene hits a script error, so never trust the game process
 exit code by itself. `bin/gai check` scans the output and fails for you.
@@ -156,22 +168,23 @@ exit code by itself. `bin/gai check` scans the output and fails for you.
 ## Verification
 
 - `bin/gai check` is the game gate. A clean run prints `check: ok`.
+- `bin/gai check` runs `game/tests` when the runner exists. `bin/gai test --filter <name>` runs one area while you iterate. Read `docs/gai/testing.md`.
 - You cannot see the game window. Never claim that a scene looks right. Say what you changed and what the check proves.
-- For logic that is hard to observe, add a temporary `print()` and run `bin/gai run -- --headless --quit-after 60`.
+- For logic that is hard to observe, add a test that asserts the behavior. Use a temporary `print()` only when a test is not practical.
 - Do not hide a failing check. Report it with the first error from the log.
 
 ## Engine work
 
 The engine is fully editable. A game task starts in `game/`, but it may change
 any engine file when the requirement needs it. After an engine change, rebuild
-with `bin/gai bootstrap` and run `bin/gai check`.
+with `bin/gai build` and run `bin/gai check`.
 
 For a change that gai itself should maintain:
 
 1. Read `docs/gai/architecture.md` and `docs/gai/upstream.md`.
 2. Add or activate a feature in `.gai/features/`.
 3. Add the feature doc and tests.
-4. Build the engine and run the feature tests.
+4. Build the engine with `bin/gai build` and run the feature tests.
 5. Run `bin/gai upstream check --strict` before you commit.
 
 A game-specific engine change can stay unclaimed. `bin/gai upstream report`
