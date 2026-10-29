@@ -1138,6 +1138,8 @@ def cmd_test_scene(engine, args, log_path: Path, junit_path: Path) -> int:
         argv = [engine, "--headless", "--path", GAME_DIR]
         if args.scene_frames > 0:
             argv.extend(["--quit-after", str(args.scene_frames)])
+        if args.scene_fixed_fps > 0:
+            argv.extend(["--fixed-fps", str(args.scene_fixed_fps)])
         argv.append(scene)
         text = ""
         returncode = None
@@ -3188,6 +3190,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="with --scene-dir, pass --quit-after N; 0 lets the scene quit itself",
+    )
+    test_cmd.add_argument(
+        "--scene-fixed-fps",
+        type=int,
+        default=0,
+        help="with --scene-dir, pass --fixed-fps N; 0 leaves the rate alone",
     )
     test_cmd.add_argument(
         "--isolate",

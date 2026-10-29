@@ -143,7 +143,15 @@ class GameTestTest(unittest.TestCase):
             '[node name="SceneProbeFail" type="Node"]\nscript = ExtResource("1")\n',
             encoding="utf-8",
         )
-        result = self.run_gai("test", "--scene-dir", "res://tests", "--filter", "scene_probe")
+        result = self.run_gai(
+            "test",
+            "--scene-dir",
+            "res://tests",
+            "--filter",
+            "scene_probe",
+            "--scene-fixed-fps",
+            "60",
+        )
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("1 passed, 1 failed", result.stdout)
         self.assertIn("scene probe failure", result.stdout)

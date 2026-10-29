@@ -16,6 +16,7 @@ runs. It does not prove that the game behaves correctly. `bin/gai test` runs
 | `bin/gai test --isolate-tests` | Run each test method in a separate engine process. |
 | `bin/gai test --isolate --file-timeout 30` | Bound one file; a hung file is killed and the rest run. |
 | `bin/gai test --isolate-tests --file-timeout 30` | Bound one test; only that test times out. |
+| `bin/gai test --scene-dir res://tests --scene-fixed-fps 60` | Run scene tests at a fixed frame rate. |
 | `bin/gai check` | Run the game checks and the tests. |
 | `bin/gai check --no-tests` | Skip the tests. |
 
@@ -51,6 +52,7 @@ non-zero exit, an engine error, or a timeout is a failure. The report goes to
 
 - `--scene-timeout` bounds one scene (default 120 seconds).
 - `--scene-frames N` adds `--quit-after N`; 0 lets the scene quit itself.
+- `--scene-fixed-fps N` adds `--fixed-fps N`; use 60 for a deterministic simulation.
 - `--filter` matches the scene path.
 - This mode is separate from the `game/tests` harness and from `--isolate`.
 
