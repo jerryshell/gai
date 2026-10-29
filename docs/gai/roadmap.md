@@ -113,6 +113,18 @@ engine source.
 | 60+ game modules | On demand. Breadth is not gai's product. |
 | Hub, CLI, skills | Not needed; `bin/gai`, AGENTS, and skills cover this. |
 
+## CI policy
+
+- Every push and pull request runs the fast static checks.
+- Every push and pull request runs the `gai` workflow: fork checks, the official
+  engine game check, and the source engine build with the bridge, MCP, export,
+  and game tests. A docs-only push skips this workflow.
+- The full Godot platform matrix (Android, iOS, Linux, macOS, Windows, Web) is
+  manual: `workflow_dispatch` on the `GHA` workflow. Run it before an upstream
+  release merge, not on every commit.
+- A pull request always runs the `gai` workflow, so a required check is never
+  left pending by a path filter.
+
 ## Guardrails
 
 - No in-engine MCP server. Keep the bridge as the API and MCP at the edge.
