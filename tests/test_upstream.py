@@ -33,9 +33,7 @@ class Repo:
             env=self.env,
         )
         if check and result.returncode != 0:
-            raise AssertionError(
-                f"git {' '.join(map(str, args))} failed\n{result.stdout}\n{result.stderr}"
-            )
+            raise AssertionError(f"git {' '.join(map(str, args))} failed\n{result.stdout}\n{result.stderr}")
         return result
 
     def gai(self, *args):
@@ -59,14 +57,12 @@ class UpstreamTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="gai-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         env = dict(os.environ)
-        env.update(
-            {
-                "GIT_AUTHOR_NAME": "gai test",
-                "GIT_AUTHOR_EMAIL": "test@example.com",
-                "GIT_COMMITTER_NAME": "gai test",
-                "GIT_COMMITTER_EMAIL": "test@example.com",
-            }
-        )
+        env.update({
+            "GIT_AUTHOR_NAME": "gai test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "gai test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        })
         self.repo = Repo(self.tmp / "repo", env)
         self.repo.root.mkdir()
         (self.repo.root / "bin").mkdir()
@@ -145,13 +141,16 @@ class UpstreamTest(unittest.TestCase):
         self.repo.git("commit", "-q", "-m", "record upstream base and features")
 
         self.repo.write("README.md", "# test game\n")
-        self.repo.write("version.py", 'short_name = "godot"\nname = "gai"\nmajor = 4\nminor = 7\npatch = 2\n'
-                         'status = "stable"\nmodule_config = ""\nwebsite = "https://github.com/jerryshell/gai"\ndocs = "4.7"\n')
+        self.repo.write(
+            "version.py",
+            'short_name = "godot"\nname = "gai"\nmajor = 4\nminor = 7\npatch = 2\n'
+            'status = "stable"\nmodule_config = ""\nwebsite = "https://github.com/jerryshell/gai"\ndocs = "4.7"\n',
+        )
         self.repo.write(".gitignore", "bin\n!/bin/\n/bin/*\n!/bin/gai\n")
         self.repo.git("add", "-A")
         self.repo.git("commit", "-q", "-m", "fork workspace")
 
-    def make_upstream(self, files: dict):
+    def make_upstream(self, files: dict[str, str]):
         bare = self.tmp / "upstream.git"
         work = self.tmp / "upstream-work"
         self.repo.git("clone", "-q", "--bare", str(self.repo.root), str(bare), cwd=self.tmp)
@@ -235,9 +234,7 @@ class UpstreamTest(unittest.TestCase):
 
         abort = self.repo.gai("upstream", "abort")
         self.assertEqual(abort.returncode, 0, abort.stdout + abort.stderr)
-        self.assertTrue(
-            self.repo.git("rev-parse", "--verify", "-q", "MERGE_HEAD", check=False).returncode != 0
-        )
+        self.assertTrue(self.repo.git("rev-parse", "--verify", "-q", "MERGE_HEAD", check=False).returncode != 0)
         self.assertEqual((self.repo.root / "README.md").read_text(), "# test game\n")
 
     def test_unclaimed_engine_edit_warns_and_strict_fails(self):
@@ -359,9 +356,7 @@ class UpstreamTest(unittest.TestCase):
     def test_doctor_warns_on_untracked_engine_file(self):
         fake = self.repo.root / "bin" / "fake-godot"
         fake.write_text(
-            "#!/bin/sh\n"
-            "if [ \"$1\" = \"--version\" ]; then echo 4.7.2.stable; exit 0; fi\n"
-            "exit 0\n",
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 4.7.2.stable; exit 0; fi\nexit 0\n',
             encoding="utf-8",
         )
         fake.chmod(0o755)

@@ -13,11 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bin"))
 
-import gai_mcp
+import gai_mcp  # noqa: E402
 
-PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z3ZkAAAAASUVORK5CYII="
-)
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z3ZkAAAAASUVORK5CYII=")
 
 
 class FakeRunner:
@@ -66,14 +64,12 @@ class FakeEventSource:
     def subscribe(self, path=None, handle=None, signal=None, since=None):
         self.calls.append(("subscribe", path, handle, signal, since))
         if self.callback is not None:
-            self.callback(
-                {
-                    "subscription": 1,
-                    "signal": signal,
-                    "path": path,
-                    "args": [],
-                }
-            )
+            self.callback({
+                "subscription": 1,
+                "signal": signal,
+                "path": path,
+                "args": [],
+            })
         return {"subscription": 1, "signal": signal, "path": path}
 
     def unsubscribe(self, subscription):
@@ -157,20 +153,18 @@ class McpTest(unittest.TestCase):
         return responses, bridge
 
     def test_initialize_and_tools_list(self):
-        responses, _ = self.run_mcp(
-            [
-                self.request(
-                    1,
-                    "initialize",
-                    {
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": {},
-                        "clientInfo": {"name": "test", "version": "1"},
-                    },
-                ),
-                self.request(2, "tools/list"),
-            ]
-        )
+        responses, _ = self.run_mcp([
+            self.request(
+                1,
+                "initialize",
+                {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            ),
+            self.request(2, "tools/list"),
+        ])
         initialized = responses[0]["result"]
         self.assertEqual(initialized["serverInfo"]["name"], "gai")
         self.assertEqual(initialized["protocolVersion"], "2025-06-18")
@@ -184,72 +178,58 @@ class McpTest(unittest.TestCase):
         self.assertIn("gai_unsubscribe", names)
 
     def test_scene_tree(self):
-        responses, _ = self.run_mcp(
-            [self.call_tool("gai_scene_tree", {})]
-        )
+        responses, _ = self.run_mcp([self.call_tool("gai_scene_tree", {})])
         result = responses[0]["result"]
         self.assertFalse(result["isError"])
         payload = json.loads(result["content"][0]["text"])
         self.assertEqual(payload["name"], "Main")
 
     def test_call_forwards_to_bridge(self):
-        responses, bridge = self.run_mcp(
-            [
-                self.call_tool(
-                    "gai_call",
-                    {"method": "ping", "params": {}},
-                )
-            ]
-        )
+        responses, bridge = self.run_mcp([
+            self.call_tool(
+                "gai_call",
+                {"method": "ping", "params": {}},
+            )
+        ])
         self.assertFalse(responses[0]["result"]["isError"])
         self.assertIn(("ping", {}), bridge.calls)
 
     def test_node_set_keeps_json_value(self):
-        responses, bridge = self.run_mcp(
-            [
-                self.call_tool(
-                    "gai_node_set",
-                    {"path": "/root/Main", "property": "visible", "value": False},
-                )
-            ]
-        )
+        responses, bridge = self.run_mcp([
+            self.call_tool(
+                "gai_node_set",
+                {"path": "/root/Main", "property": "visible", "value": False},
+            )
+        ])
         self.assertFalse(responses[0]["result"]["isError"])
         self.assertEqual(bridge.calls[-1][0], "node.set")
         self.assertIs(bridge.calls[-1][1]["value"], False)
 
     def test_read_file(self):
-        responses, _ = self.run_mcp(
-            [self.call_tool("gai_read_file", {"path": "project.godot"})]
-        )
+        responses, _ = self.run_mcp([self.call_tool("gai_read_file", {"path": "project.godot"})])
         result = responses[0]["result"]
         self.assertFalse(result["isError"])
         payload = json.loads(result["content"][0]["text"])
         self.assertIn("run/main_scene", payload["text"])
 
     def test_read_file_rejects_traversal(self):
-        responses, _ = self.run_mcp(
-            [self.call_tool("gai_read_file", {"path": "../version.py"})]
-        )
+        responses, _ = self.run_mcp([self.call_tool("gai_read_file", {"path": "../version.py"})])
         result = responses[0]["result"]
         self.assertTrue(result["isError"])
         self.assertIn("escapes", result["content"][0]["text"])
 
     def test_read_file_rejects_bridge_token(self):
-        responses, _ = self.run_mcp(
-            [self.call_tool("gai_read_file", {"path": ".gai/agent.json"})]
-        )
+        responses, _ = self.run_mcp([self.call_tool("gai_read_file", {"path": ".gai/agent.json"})])
         result = responses[0]["result"]
         self.assertTrue(result["isError"])
         self.assertIn("token", result["content"][0]["text"])
 
     def test_resources(self):
-        responses, _ = self.run_mcp(
-            [
-                self.request(1, "resources/list"),
-                self.request(2, "resources/read", {"uri": "gai://project.godot"}),
-                self.request(3, "resources/read", {"uri": "gai://missing"}),
-            ]
-        )
+        responses, _ = self.run_mcp([
+            self.request(1, "resources/list"),
+            self.request(2, "resources/read", {"uri": "gai://project.godot"}),
+            self.request(3, "resources/read", {"uri": "gai://missing"}),
+        ])
         uris = {resource["uri"] for resource in responses[0]["result"]["resources"]}
         self.assertIn("gai://docs/testing", uris)
         contents = responses[1]["result"]["contents"][0]
@@ -268,9 +248,7 @@ class McpTest(unittest.TestCase):
         self.assertEqual(list(self.runtime.glob("screenshots/*.png")), [])
 
     def test_gai_test_success_and_filter(self):
-        runner = FakeRunner(
-            test_payload={"tests": 2, "passed": 2, "failed": 0, "pending": 0, "results": []}
-        )
+        runner = FakeRunner(test_payload={"tests": 2, "passed": 2, "failed": 0, "pending": 0, "results": []})
         responses, _ = self.run_mcp(
             [self.call_tool("gai_test", {"filter": "player"})],
             runner,
@@ -330,11 +308,7 @@ class McpTest(unittest.TestCase):
             event_source=source,
         )
         self.assertEqual(source.calls, [("subscribe", "/root/Main", None, "ready", 5)])
-        notifications = [
-            message
-            for message in responses
-            if message.get("method") == "notifications/message"
-        ]
+        notifications = [message for message in responses if message.get("method") == "notifications/message"]
         self.assertEqual(len(notifications), 1)
         event = notifications[0]["params"]["data"]["event"]
         self.assertEqual(event["signal"], "ready")
@@ -353,39 +327,33 @@ class McpTest(unittest.TestCase):
         self.assertFalse(responses[0]["result"]["isError"])
 
     def test_batch_and_unknown_method(self):
-        responses, _ = self.run_mcp(
+        responses, _ = self.run_mcp([
             [
-                [
-                    self.request(1, "ping"),
-                    self.request(2, "nope"),
-                ]
+                self.request(1, "ping"),
+                self.request(2, "nope"),
             ]
-        )
+        ])
         batch = responses[0]
         self.assertEqual(batch[0]["result"], {})
         self.assertEqual(batch[1]["error"]["code"], -32601)
 
     def test_tool_and_bridge_errors(self):
-        responses, _ = self.run_mcp(
-            [
-                self.call_tool("nope", {}),
-                self.call_tool("gai_call", {"method": "bad", "params": {}}),
-                self.call_tool("gai_call", {"method": "ping", "params": []}),
-            ]
-        )
+        responses, _ = self.run_mcp([
+            self.call_tool("nope", {}),
+            self.call_tool("gai_call", {"method": "bad", "params": {}}),
+            self.call_tool("gai_call", {"method": "ping", "params": []}),
+        ])
         for response in responses:
             self.assertTrue(response["result"]["isError"])
         self.assertIn("unknown tool", responses[0]["result"]["content"][0]["text"])
         self.assertIn("bad bridge call", responses[1]["result"]["content"][0]["text"])
 
     def test_parse_error_and_notification(self):
-        responses, _ = self.run_mcp(
-            [
-                "not json",
-                {"jsonrpc": "2.0", "method": "notifications/initialized"},
-                {"jsonrpc": "2.0", "method": "nope"},
-            ]
-        )
+        responses, _ = self.run_mcp([
+            "not json",
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "method": "nope"},
+        ])
         self.assertEqual(len(responses), 1)
         self.assertEqual(responses[0]["error"]["code"], -32700)
 

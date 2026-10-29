@@ -193,7 +193,7 @@ status to stderr. `--count N` stops after N events.
 - One client can hold up to 64 subscriptions. A client without subscriptions is
   dropped after 10 minutes idle. A client whose output backlog passes 4 MiB is
   dropped.
-- `agent stop` checks the process start time and engine path before signalling.
+- `agent stop` checks the process start time and engine path before signaling.
 - Full access is intentional. The token holder can call `OS.execute`, write
   arbitrary paths through `resource.save` or `render.screenshot`, and change the
   engine source. gai is a trusted local agent interface, not a sandbox.

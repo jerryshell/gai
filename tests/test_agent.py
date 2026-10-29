@@ -7,8 +7,8 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -96,9 +96,7 @@ class AgentTest(unittest.TestCase):
         )
         self.assertEqual(unauthorized["error"]["code"], -32001)
 
-        missing_token = self.raw(
-            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "scene.tree", "params": {}}) + "\n"
-        )
+        missing_token = self.raw(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "scene.tree", "params": {}}) + "\n")
         self.assertEqual(missing_token["error"]["code"], -32001)
 
         malformed = self.raw("not json\n")
@@ -152,7 +150,7 @@ class AgentTest(unittest.TestCase):
         game = self.tmp / "game"
         (game / "autoloads").mkdir()
         (game / "autoloads" / "probe.gd").write_text(
-            "extends Node\n\n\nfunc ping() -> String:\n\treturn \"pong\"\n",
+            'extends Node\n\n\nfunc ping() -> String:\n\treturn "pong"\n',
             encoding="utf-8",
         )
         with (game / "project.godot").open("a", encoding="utf-8") as handle:
@@ -199,9 +197,7 @@ class AgentTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in batch], [1, 2])
         self.assertTrue(batch[0]["result"]["pong"])
 
-        unauthorized = self.raw(
-            json.dumps([request(3), request(4, "wrong")]) + "\n"
-        )
+        unauthorized = self.raw(json.dumps([request(3), request(4, "wrong")]) + "\n")
         self.assertEqual(unauthorized[1]["error"]["code"], -32001)
 
         empty = self.raw("[]\n")
@@ -249,15 +245,13 @@ class AgentTest(unittest.TestCase):
         subscription = read(watcher)["result"]["subscription"]
 
         hidden = self.raw(
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "node.set",
-                    "params": {"path": "/root/Main/Title", "property": "visible", "value": False},
-                    "token": state["token"],
-                }
-            )
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "node.set",
+                "params": {"path": "/root/Main/Title", "property": "visible", "value": False},
+                "token": state["token"],
+            })
             + "\n"
         )
         self.assertFalse(hidden["result"]["value"])
@@ -280,15 +274,13 @@ class AgentTest(unittest.TestCase):
         self.assertTrue(read(watcher)["result"]["removed"])
 
         restored = self.raw(
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 4,
-                    "method": "node.set",
-                    "params": {"path": "/root/Main/Title", "property": "visible", "value": True},
-                    "token": state["token"],
-                }
-            )
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "node.set",
+                "params": {"path": "/root/Main/Title", "property": "visible", "value": True},
+                "token": state["token"],
+            })
             + "\n"
         )
         self.assertTrue(restored["result"]["value"])
@@ -337,15 +329,13 @@ class AgentTest(unittest.TestCase):
         )
         subscription = read(watcher)["result"]["subscription"]
         self.raw(
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "node.set",
-                    "params": {"path": "/root/Main/Title", "property": "visible", "value": False},
-                    "token": token,
-                }
-            )
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "node.set",
+                "params": {"path": "/root/Main/Title", "property": "visible", "value": False},
+                "token": token,
+            })
             + "\n"
         )
         event = read(watcher)
@@ -380,15 +370,13 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(result["replay"], [])
 
         self.raw(
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "node.set",
-                    "params": {"path": "/root/Main/Title", "property": "visible", "value": True},
-                    "token": token,
-                }
-            )
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "node.set",
+                "params": {"path": "/root/Main/Title", "property": "visible", "value": True},
+                "token": token,
+            })
             + "\n"
         )
         replay.close()
@@ -469,7 +457,9 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(call("object.get", {"handle": handle, "property": "position"}), position)
 
         bad_handle = self.run_gai(
-            "agent", "call", "object.set",
+            "agent",
+            "call",
+            "object.set",
             json.dumps({"handle": handle, "property": "script", "value": {"$handle": "0"}}),
         )
         self.assertEqual(bad_handle.returncode, 1)
@@ -490,7 +480,9 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(refused.returncode, 1)
         self.assertIn("refusing", refused.stderr)
         refused_call = self.run_gai(
-            "agent", "call", "object.call",
+            "agent",
+            "call",
+            "object.call",
             json.dumps({"handle": renderer["handle"], "method": "free", "args": []}),
         )
         self.assertEqual(refused_call.returncode, 1)
@@ -586,9 +578,7 @@ class AgentTest(unittest.TestCase):
             "engine": str(ENGINE),
             "starttime": "0",
         }
-        (self.tmp / ".gai" / "agent.json").write_text(
-            json.dumps(state) + "\n", encoding="utf-8"
-        )
+        (self.tmp / ".gai" / "agent.json").write_text(json.dumps(state) + "\n", encoding="utf-8")
         result = self.run_gai("agent", "stop")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("not the agent", result.stdout)

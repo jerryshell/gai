@@ -35,19 +35,18 @@ class ExportTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="gai-export-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "project.godot").write_text(
-            'config_version=5\n\n[application]\n\nconfig/name="Export Probe"\n'
-            'run/main_scene="res://main.tscn"\n',
+            'config_version=5\n\n[application]\n\nconfig/name="Export Probe"\nrun/main_scene="res://main.tscn"\n',
             encoding="utf-8",
         )
         (self.tmp / "main.tscn").write_text(
-            "[gd_scene format=3]\n\n[node name=\"Main\" type=\"Node\"]\n",
+            '[gd_scene format=3]\n\n[node name="Main" type="Node"]\n',
             encoding="utf-8",
         )
         self.template = self.tmp / "template.bin"
         self.template.write_text("template\n", encoding="utf-8")
         (self.tmp / "export_presets.cfg").write_text(
             '[preset.0]\n\nname="Linux"\nexport_path="build/linux/game.x86_64"\n\n'
-            '[preset.0.options]\n\n'
+            "[preset.0.options]\n\n"
             f'custom_template/release="{self.template}"\n',
             encoding="utf-8",
         )

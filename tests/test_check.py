@@ -55,9 +55,7 @@ class CheckTest(unittest.TestCase):
             "commit": "0" * 40,
             "merged_at": "2026-10-25",
         }
-        (self.tmp / ".gai" / "upstream.json").write_text(
-            json.dumps(state, indent=2) + "\n", encoding="utf-8"
-        )
+        (self.tmp / ".gai" / "upstream.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
     def run_gai(self, *args):
         env = dict(os.environ)

@@ -292,3 +292,24 @@
 *.py                                          @godotengine/buildsystem
 SConstruct                                    @godotengine/buildsystem
 SCsub                                         @godotengine/buildsystem
+
+# gai workspace
+
+/AGENTS.md                                    @jerryshell
+/.agents/skills/godot-game/                   @jerryshell
+/.gai/                                        @jerryshell
+/.github/CODEOWNERS                           @jerryshell
+/.github/workflows/gai.yml                    @jerryshell
+/bin/gai                                      @jerryshell
+/bin/gai_mcp.py                               @jerryshell
+/docs/gai/                                    @jerryshell
+/modules/gai_agent/                           @jerryshell
+/tests/test_agent.py                          @jerryshell
+/tests/test_build.py                          @jerryshell
+/tests/test_check.py                          @jerryshell
+/tests/test_export.py                         @jerryshell
+/tests/test_game_tests.py                     @jerryshell
+/tests/test_init.py                           @jerryshell
+/tests/test_mcp.py                            @jerryshell
+/tests/test_steam.py                          @jerryshell
+/tests/test_upstream.py                       @jerryshell

@@ -52,9 +52,7 @@ class GameTestTest(unittest.TestCase):
             "commit": "0" * 40,
             "merged_at": "2026-10-25",
         }
-        (self.tmp / ".gai" / "upstream.json").write_text(
-            json.dumps(state, indent=2) + "\n", encoding="utf-8"
-        )
+        (self.tmp / ".gai" / "upstream.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
     def run_gai(self, *args):
         env = dict(os.environ)
@@ -70,9 +68,9 @@ class GameTestTest(unittest.TestCase):
 
     def write_failing_test(self):
         (self.tmp / "game" / "tests" / "test_zz_fail.gd").write_text(
-            "extends \"res://tests/gai_test_case.gd\"\n\n"
+            'extends "res://tests/gai_test_case.gd"\n\n'
             "func test_math() -> void:\n"
-            "\tassert_eq(2 + 2, 5, \"math is broken\")\n",
+            '\tassert_eq(2 + 2, 5, "math is broken")\n',
             encoding="utf-8",
         )
 
@@ -114,9 +112,7 @@ class GameTestTest(unittest.TestCase):
     @unittest.skipUnless(ENGINE, "no engine binary")
     def test_parse_error_fails(self):
         (self.tmp / "game" / "tests" / "test_broken.gd").write_text(
-            "extends \"res://tests/gai_test_case.gd\"\n\n"
-            "func test_broken( -> void:\n"
-            "\tpass\n",
+            'extends "res://tests/gai_test_case.gd"\n\nfunc test_broken( -> void:\n\tpass\n',
             encoding="utf-8",
         )
         result = self.run_gai("test", "--filter", "broken")
@@ -128,23 +124,21 @@ class GameTestTest(unittest.TestCase):
     def test_scene_tests(self):
         tests = self.tmp / "game" / "tests"
         (tests / "scene_probe_pass.gd").write_text(
-            "extends Node\n\nfunc _ready() -> void:\n"
-            "\tprint(\"scene probe pass\")\n\tget_tree().quit(0)\n",
+            'extends Node\n\nfunc _ready() -> void:\n\tprint("scene probe pass")\n\tget_tree().quit(0)\n',
             encoding="utf-8",
         )
         (tests / "scene_probe_fail.gd").write_text(
-            "extends Node\n\nfunc _ready() -> void:\n"
-            "\tpush_error(\"scene probe failure\")\n\tget_tree().quit(1)\n",
+            'extends Node\n\nfunc _ready() -> void:\n\tpush_error("scene probe failure")\n\tget_tree().quit(1)\n',
             encoding="utf-8",
         )
         (tests / "scene_probe_pass.tscn").write_text(
-            '[gd_scene load_steps=2 format=3]\n\n'
+            "[gd_scene load_steps=2 format=3]\n\n"
             '[ext_resource type="Script" path="res://tests/scene_probe_pass.gd" id="1"]\n\n'
             '[node name="SceneProbePass" type="Node"]\nscript = ExtResource("1")\n',
             encoding="utf-8",
         )
         (tests / "scene_probe_fail.tscn").write_text(
-            '[gd_scene load_steps=2 format=3]\n\n'
+            "[gd_scene load_steps=2 format=3]\n\n"
             '[ext_resource type="Script" path="res://tests/scene_probe_fail.gd" id="1"]\n\n'
             '[node name="SceneProbeFail" type="Node"]\nscript = ExtResource("1")\n',
             encoding="utf-8",
@@ -166,10 +160,7 @@ class GameTestTest(unittest.TestCase):
     @unittest.skipUnless(ENGINE, "no engine binary")
     def test_isolate_timeout(self):
         (self.tmp / "game" / "tests" / "test_zz_hang.gd").write_text(
-            "extends \"res://tests/gai_test_case.gd\"\n\n"
-            "func test_hang() -> void:\n"
-            "\twhile true:\n"
-            "\t\tpass\n",
+            'extends "res://tests/gai_test_case.gd"\n\nfunc test_hang() -> void:\n\twhile true:\n\t\tpass\n',
             encoding="utf-8",
         )
         result = self.run_gai("test", "--isolate-tests", "--file-timeout", "2")

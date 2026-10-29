@@ -17,12 +17,11 @@ class InitTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="gai-init-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "project.godot").write_text(
-            'config_version=5\n\n[application]\n\nconfig/name="Init Probe"\n'
-            'run/main_scene="res://main.tscn"\n',
+            'config_version=5\n\n[application]\n\nconfig/name="Init Probe"\nrun/main_scene="res://main.tscn"\n',
             encoding="utf-8",
         )
         (self.tmp / "main.tscn").write_text(
-            "[gd_scene format=3]\n\n[node name=\"Main\" type=\"Node\"]\n",
+            '[gd_scene format=3]\n\n[node name="Main" type="Node"]\n',
             encoding="utf-8",
         )
 
@@ -61,7 +60,7 @@ class InitTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.tmp / "tests" / "scene_test.tscn").write_text(
-            '[gd_scene load_steps=2 format=3]\n\n'
+            "[gd_scene load_steps=2 format=3]\n\n"
             '[ext_resource type="Script" path="res://tests/scene_test.gd" id="1"]\n\n'
             '[node name="SceneTest" type="Node"]\nscript = ExtResource("1")\n',
             encoding="utf-8",

@@ -34,21 +34,21 @@ class BridgeConnection:
         self.timeout = timeout
         self._lock = threading.Lock()
         self._send_lock = threading.Lock()
-        self._pending = {}
+        self._pending: dict[int, dict[str, Any]] = {}
         self._next_id = 1
-        self._callback = None
+        self._callback: Callable[[dict[str, Any]], None] | None = None
         self._closed = False
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
 
-    def set_callback(self, callback) -> None:
+    def set_callback(self, callback: Callable[[dict[str, Any]], None] | None) -> None:
         self._callback = callback
 
-    def call(self, method: str, params: dict):
+    def call(self, method: str, params: dict[str, Any]):
         with self._lock:
             request_id = self._next_id
             self._next_id += 1
-            waiter = {"event": threading.Event(), "response": None}
+            waiter: dict[str, Any] = {"event": threading.Event(), "response": None}
             self._pending[request_id] = waiter
         request = {
             "jsonrpc": "2.0",
@@ -59,9 +59,7 @@ class BridgeConnection:
         }
         try:
             with self._send_lock:
-                self.sock.sendall(
-                    (json.dumps(request, ensure_ascii=True) + "\n").encode("utf-8")
-                )
+                self.sock.sendall((json.dumps(request, ensure_ascii=True) + "\n").encode("utf-8"))
         except OSError as exc:
             with self._lock:
                 self._pending.pop(request_id, None)
@@ -78,7 +76,7 @@ class BridgeConnection:
         return response.get("result")
 
     def subscribe(self, path=None, handle=None, signal=None, since=None):
-        params = {"signal": signal}
+        params: dict[str, Any] = {"signal": signal}
         if handle is not None:
             params["handle"] = handle
         elif path is not None:
@@ -166,7 +164,7 @@ def log(message: str) -> None:
     print(f"gai-mcp: {message}", file=sys.stderr, flush=True)
 
 
-def _schema(properties: dict, required: tuple = ()) -> dict:
+def _schema(properties: dict[str, Any], required: tuple[str, ...] = ()) -> dict[str, Any]:
     schema = {
         "type": "object",
         "properties": properties,
@@ -183,11 +181,11 @@ def _text(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False, default=str)
 
 
-def _result_text(value: Any) -> dict:
+def _result_text(value: Any) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": _text(value)}], "isError": False}
 
 
-def _result_error(message: str) -> dict:
+def _result_error(message: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
@@ -204,7 +202,7 @@ def _last_json(text: str) -> Any:
     return None
 
 
-def _error(request_id: Any, code: int, message: str) -> dict:
+def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -220,12 +218,12 @@ def _write(stream, payload: Any) -> None:
 class Server:
     def __init__(
         self,
-        bridge: Callable[[str, dict], Any],
+        bridge: Callable[[str, dict[str, Any]], Any],
         root: Path,
         project: Path,
         runtime: Path | None = None,
         version: str = "unknown",
-        runner: Callable[[list[str], float], dict] | None = None,
+        runner: Callable[[list[str], float], dict[str, Any]] | None = None,
         command_timeout: float = 300.0,
         event_source=None,
     ) -> None:
@@ -237,11 +235,11 @@ class Server:
         self.runner = runner
         self.command_timeout = command_timeout
         self.event_source = event_source
-        self.stdout = None
+        self.stdout: Any = None
         self.write_lock = threading.Lock()
         self.stopped = False
 
-    def tool_specs(self) -> list[dict]:
+    def tool_specs(self) -> list[dict[str, Any]]:
         return [
             {
                 "name": "gai_status",
@@ -251,8 +249,7 @@ class Server:
             {
                 "name": "gai_methods",
                 "description": (
-                    "List every method the gai bridge exposes. Call gai_call for a "
-                    "method that has no dedicated tool."
+                    "List every method the gai bridge exposes. Call gai_call for a method that has no dedicated tool."
                 ),
                 "inputSchema": _schema({}),
             },
@@ -279,8 +276,7 @@ class Server:
             {
                 "name": "gai_node_set",
                 "description": (
-                    "Set one property on a node by path. value can be JSON or Godot "
-                    "text such as Vector2(10, 20)."
+                    "Set one property on a node by path. value can be JSON or Godot text such as Vector2(10, 20)."
                 ),
                 "inputSchema": _schema(
                     {
@@ -316,26 +312,20 @@ class Server:
             },
             {
                 "name": "gai_screenshot",
-                "description": (
-                    "Capture the running game to a PNG image. The game must run "
-                    "with a display."
-                ),
+                "description": ("Capture the running game to a PNG image. The game must run with a display."),
                 "inputSchema": _schema({}),
             },
             {
                 "name": "gai_test",
                 "description": (
-                    "Run the game tests headlessly and return the JSON summary. "
-                    "An optional filter matches file::name."
+                    "Run the game tests headlessly and return the JSON summary. An optional filter matches file::name."
                 ),
-                "inputSchema": _schema(
-                    {
-                        "filter": {
-                            "type": "string",
-                            "description": "Only tests whose file::name contains this text.",
-                        }
+                "inputSchema": _schema({
+                    "filter": {
+                        "type": "string",
+                        "description": "Only tests whose file::name contains this text.",
                     }
-                ),
+                }),
             },
             {
                 "name": "gai_check",
@@ -374,7 +364,7 @@ class Server:
             },
         ]
 
-    def resource_specs(self) -> list[dict]:
+    def resource_specs(self) -> list[dict[str, Any]]:
         return [
             {
                 "uri": "gai://project.godot",
@@ -408,7 +398,7 @@ class Server:
             },
         ]
 
-    def initialize(self, params: Any) -> dict:
+    def initialize(self, params: Any) -> dict[str, Any]:
         requested = ""
         if isinstance(params, dict):
             requested = params.get("protocolVersion", "")
@@ -429,7 +419,7 @@ class Server:
             ),
         }
 
-    def tools_call(self, params: Any) -> dict:
+    def tools_call(self, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict):
             raise ToolError("tools/call params must be an object")
         name = params.get("name")
@@ -448,7 +438,7 @@ class Server:
             return {"content": [{"type": "text", "text": _text(value.value)}], "isError": True}
         return _result_text(value)
 
-    def call_tool(self, name: str, arguments: dict) -> Any:
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         if name == "gai_status":
             return {
                 "project": str(self.project),
@@ -463,12 +453,10 @@ class Server:
             return self._bridge("scene.tree", {})
         if name == "gai_node_get":
             path = self._required_string(arguments, "path")
-            params: dict = {"path": path}
+            params: dict[str, Any] = {"path": path}
             if "properties" in arguments:
                 properties = arguments["properties"]
-                if not isinstance(properties, list) or not all(
-                    isinstance(item, str) for item in properties
-                ):
+                if not isinstance(properties, list) or not all(isinstance(item, str) for item in properties):
                     raise ToolError("properties must be an array of strings")
                 params["properties"] = properties
             return self._bridge("node.get", params)
@@ -507,7 +495,7 @@ class Server:
             return self.unsubscribe_tool(arguments)
         raise ToolError(f"unknown tool: {name}")
 
-    def read_file(self, relative_path: str) -> dict:
+    def read_file(self, relative_path: str) -> dict[str, Any]:
         relative = Path(relative_path)
         if relative.is_absolute():
             raise ToolError("path must be relative to the project")
@@ -557,7 +545,7 @@ class Server:
             f"{width}x{height} PNG",
         )
 
-    def subscribe_tool(self, arguments: dict) -> Any:
+    def subscribe_tool(self, arguments: dict[str, Any]) -> Any:
         if self.event_source is None:
             raise ToolError("event forwarding is not configured")
         signal = self._required_string(arguments, "signal")
@@ -572,11 +560,9 @@ class Server:
         since = arguments.get("since")
         if since is not None and (isinstance(since, bool) or not isinstance(since, int)):
             raise ToolError("since must be an integer")
-        return self.event_source.subscribe(
-            path=path, handle=handle, signal=signal, since=since
-        )
+        return self.event_source.subscribe(path=path, handle=handle, signal=signal, since=since)
 
-    def unsubscribe_tool(self, arguments: dict) -> Any:
+    def unsubscribe_tool(self, arguments: dict[str, Any]) -> Any:
         if self.event_source is None:
             raise ToolError("event forwarding is not configured")
         subscription = arguments.get("subscription")
@@ -584,7 +570,7 @@ class Server:
             raise ToolError("subscription must be an integer")
         return self.event_source.unsubscribe(subscription)
 
-    def emit_event(self, params: dict) -> None:
+    def emit_event(self, params: dict[str, Any]) -> None:
         notification = {
             "jsonrpc": "2.0",
             "method": "notifications/message",
@@ -601,7 +587,7 @@ class Server:
             if self.stdout is not None:
                 _write(self.stdout, payload)
 
-    def run_test(self, arguments: dict) -> Any:
+    def run_test(self, arguments: dict[str, Any]) -> Any:
         if self.runner is None:
             raise ToolError("the test runner is not configured")
         command = ["test", "--json"]
@@ -620,7 +606,7 @@ class Server:
         failed = int(result.get("returncode") or 0) != 0 or int(summary.get("failed", 0)) > 0
         return ToolFailure(payload) if failed else payload
 
-    def run_check(self, arguments: dict) -> Any:
+    def run_check(self, arguments: dict[str, Any]) -> Any:
         del arguments
         if self.runner is None:
             raise ToolError("the check runner is not configured")
@@ -634,7 +620,7 @@ class Server:
         payload = {"exit_code": result.get("returncode"), "output": output}
         return ToolFailure(payload) if int(result.get("returncode") or 0) != 0 else payload
 
-    def resources_read(self, params: Any) -> dict:
+    def resources_read(self, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict):
             raise ToolError("resources/read params must be an object")
         uri = params.get("uri")
@@ -687,7 +673,7 @@ class Server:
             return {}
         raise MethodNotFound(f"method not found: {method}")
 
-    def handle_one(self, message: Any) -> dict | None:
+    def handle_one(self, message: Any) -> dict[str, Any] | None:
         if not isinstance(message, dict):
             return _error(None, -32600, "invalid request")
         method = message.get("method")
@@ -730,7 +716,7 @@ class Server:
             return responses or None
         return self.handle_one(message)
 
-    def _bridge(self, method: str, params: dict) -> Any:
+    def _bridge(self, method: str, params: dict[str, Any]) -> Any:
         try:
             value = self.bridge(method, params)
         except ToolError:
@@ -741,7 +727,7 @@ class Server:
             raise ToolError(str(value["$gai_error"]))
         return value
 
-    def _required_string(self, arguments: dict, name: str) -> str:
+    def _required_string(self, arguments: dict[str, Any], name: str) -> str:
         value = arguments.get(name)
         if not isinstance(value, str) or not value:
             raise ToolError(f"{name} is required")
@@ -749,7 +735,7 @@ class Server:
 
 
 def serve(
-    bridge: Callable[[str, dict], Any],
+    bridge: Callable[[str, dict[str, Any]], Any],
     stdin,
     stdout,
     *,
@@ -757,7 +743,7 @@ def serve(
     project: Path,
     runtime: Path | None = None,
     version: str = "unknown",
-    runner: Callable[[list[str], float], dict] | None = None,
+    runner: Callable[[list[str], float], dict[str, Any]] | None = None,
     command_timeout: float = 300.0,
     event_source=None,
 ) -> int:
