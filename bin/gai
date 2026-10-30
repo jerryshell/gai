@@ -884,6 +884,7 @@ def cmd_bootstrap(args) -> int:
 
 SHUTDOWN_ERRORS = (
     "resources still in use at exit",
+    "were leaked at exit",
 )
 
 
