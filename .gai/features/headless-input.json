@@ -1,0 +1,16 @@
+{
+  "title": "Headless window size and input",
+  "status": "active",
+  "risk": "low",
+  "paths": [
+    "servers/display/display_server_headless.h"
+  ],
+  "docs": [
+    "docs/gai/headless.md"
+  ],
+  "tests": [
+    "tests/test_shot.py",
+    "tests/test_game_dir.py"
+  ],
+  "notes": "The headless server reports a window size so the root Window can map input into the viewport; without it every GUI hover and click landed outside. Input only: there is still no rasteriser, so shot renders through Xvfb."
+}
