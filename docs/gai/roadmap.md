@@ -17,6 +17,15 @@ releases.
   signal watching, input injection, doubles/spies/stubs, JSON results, exit
   codes, `check` integration.
 - MCP stdio adapter: tools, resources, `gai_test`, `gai_check`.
+- Headless window size: GUI hover and clicks work in `--headless` runs, so a UI
+  click audit does not need a display.
+- Offscreen display server: `--display-driver offscreen --rendering-driver vulkan`
+  renders with a surface-less device, no swap chain and no X; `bin/gai shot` is
+  the command. Verified on lavapipe.
+- `bin/gai import`, `bin/gai shot`, `check --script <file>`, and orphan
+  `.uid`/`.import` detection in `check`.
+- The game is taken from the current directory when `GAI_GAME` is unset, instead
+  of silently from the bundled starter game.
 - `bin/gai agent watch` for signal events.
 - JUnit reports, `double_scene`, and per-file/per-test isolation with timeouts.
 - `bin/gai build` with source freshness, `bootstrap` rebuild, and an engine CI

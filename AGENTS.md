@@ -43,7 +43,9 @@ Run these from the repository root.
 | `bin/gai bootstrap` | Builds the gai engine when it is missing or stale, then checks the game. Use this on the first run. |
 | `bin/gai build` | Builds the gai engine. `--target template_release` builds an export template; `--platform` and `--mingw` cross-compile; `--clean-import` resets the game import cache. |
 | `bin/gai doctor` | Checks the engine, the game, features, and the upstream base. |
-| `bin/gai check` | Imports assets, parses every `.gd` file, runs the main scene and `game/tests`, and fails on errors. |
+| `bin/gai check` | Imports assets, compiles every `.gd` file, runs the main scene and `game/tests`, and fails on errors or on a `.uid`/`.import` whose target is gone. `--script res://x.gd --no-run` compiles one script in about seven seconds. |
+| `bin/gai import` | Imports assets and accepts the engine's shutdown abort when the cache was written. |
+| `bin/gai shot res://scene.tscn --at 0.4,1.2` | Renders frames to PNG through the offscreen display server, with no display at all. Falls back to a private Xvfb on an engine that predates the driver. |
 | `bin/gai test` | Runs `game/tests` headlessly. `--scene-dir res://tests` runs existing `.tscn` test scenes. `check` runs the harness by default. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
@@ -98,6 +100,13 @@ singleton. In editor mode `run.*`, `scene.change`, and `input.*` need
 `force: true`; `scene.tree` returns the edited scene when one is open. Add
 `--display` for screenshots. The token holder has full local access, including
 `OS.execute`.
+
+## Which game a command runs against
+
+`GAI_GAME` wins. Otherwise a `project.godot` in the current directory wins, and
+only when there is none does gai fall back to the starter game in `game/`, which
+it announces on stderr. The fallback used to be silent, so a `check` run inside a
+project reported on the starter game.
 
 ## A game outside this repository
 
