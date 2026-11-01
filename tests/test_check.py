@@ -88,6 +88,17 @@ class CheckTest(unittest.TestCase):
         self.assertIn("Parse Error", result.stdout)
 
     @unittest.skipUnless(ENGINE, "no engine binary")
+    def test_single_script_check(self):
+        (self.tmp / "game" / "scripts" / "main.gd").write_text(
+            "extends Node2D\n\nfunc _ready( -> void:\n\tpass\n", encoding="utf-8"
+        )
+        result = self.run_gai(
+            "check", "--no-tests", "--no-run", "--script", "res://scripts/main.gd"
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Parse Error", result.stdout)
+
+    @unittest.skipUnless(ENGINE, "no engine binary")
     def test_orphaned_sidecar_fails(self):
         (self.tmp / "game" / "ghost.gd.uid").write_text("uid://abc\n", encoding="utf-8")
         result = self.run_check()

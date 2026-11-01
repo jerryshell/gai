@@ -900,7 +900,7 @@ def cmd_bootstrap(args) -> int:
         return 1
 
     require_game()
-    return cmd_check(argparse.Namespace(frames=5, timeout=120, scene=[], no_tests=False))
+    return cmd_check(argparse.Namespace(frames=5, timeout=120, scene=[], no_tests=False, script=[], no_run=False))
 
 
 SHUTDOWN_ERRORS = (
@@ -1037,8 +1037,18 @@ SCRIPT_CHECKER = """extends Node
 
 
 func _ready() -> void:
+	var wanted: Array[String] = []
+	for argument in OS.get_cmdline_user_args():
+		if argument.begins_with("--script="):
+			wanted.append(argument.trim_prefix("--script="))
 	var files: Array[String] = []
 	_collect("res://", files)
+	if not wanted.is_empty():
+		var kept: Array[String] = []
+		for path in files:
+			if path in wanted:
+				kept.append(path)
+		files = kept
 	for path in files:
 		load(path)
 	print("gai-check: ", files.size(), " scripts")
@@ -1766,7 +1776,11 @@ def cmd_check(args) -> int:
     if autoloads:
         checker_scene = write_script_checker()
         print(f"check: {len(autoloads)} autoloads, scripts load in a scene", flush=True)
-        steps.append(("scripts", [engine, "--headless", "--path", GAME_DIR, checker_scene]))
+        script_step = [engine, "--headless", "--path", GAME_DIR, checker_scene]
+        if getattr(args, "script", None):
+            script_step.append("--")
+            script_step.extend(f"--script={path}" for path in args.script)
+        steps.append(("scripts", script_step))
     else:
         for script in sorted(GAME_DIR.rglob("*.gd")):
             relative = script.relative_to(GAME_DIR)
@@ -1786,12 +1800,13 @@ def cmd_check(args) -> int:
                     ],
                 )
             )
-    steps.append(
-        (
-            "run",
-            [engine, "--headless", "--path", GAME_DIR, "--quit-after", str(args.frames)],
+    if not getattr(args, "no_run", False):
+        steps.append(
+            (
+                "run",
+                [engine, "--headless", "--path", GAME_DIR, "--quit-after", str(args.frames)],
+            )
         )
-    )
     for scene in args.scene:
         steps.append(
             (
@@ -3368,6 +3383,13 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--timeout", type=int, default=120, help="seconds per step (default: 120)")
     check.add_argument("--scene", action="append", default=[], help="run an extra scene, such as res://view/game_level_1/game_level_1.tscn")
     check.add_argument("--no-tests", action="store_true", help="do not run game tests")
+    check.add_argument(
+        "--script",
+        action="append",
+        default=[],
+        help="only compile this res:// script; repeatable",
+    )
+    check.add_argument("--no-run", action="store_true", help="do not run the main scene")
     check.set_defaults(func=cmd_check)
 
     test_cmd = sub.add_parser("test", help="run game tests headlessly")

@@ -225,6 +225,17 @@ test that should pass.
 
 The result JSON has `"version": 1`. A change to the fields must raise it.
 
+## Checking one script
+
+`bin/gai check --no-tests --no-run --script res://path/thing.gd` compiles a single
+script in about seven seconds. Do not reach for `godot --check-only --script`:
+that mode never instantiates the autoloads, and the analyzer resolves a
+scene-based autoload's type from the live node, so every autoload name reads as
+unknown there.
+
+Do not load a script with `CACHE_MODE_IGNORE` while it is running either: the
+live bytecode is replaced underneath the running instance.
+
 ## Importing and looking at a frame
 
 - `bin/gai import` runs the headless import and treats the engine's shutdown

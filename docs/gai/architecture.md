@@ -114,8 +114,9 @@ fails on a `.uid` or `.import` file whose target is gone. This is the game gate.
 - `bin/gai shot` renders a scene to PNG, so it needs a display. Without
   `$DISPLAY` it wraps the engine in `xvfb-run` when that is installed.
 - `--check-only --script <file>` does not register the project's autoloads, so
-  it reports every autoload name as unknown. `bin/gai check` compiles scripts
-  inside a scene instead, where the autoloads exist.
+  it reports every autoload name as unknown: the analyzer reads a scene-based
+  autoload's type from the live node. `bin/gai check --script <file>` compiles
+  one script inside a scene instead, where the autoloads exist.
 - The bridge token grants full local access, including `OS.execute`. It is not a
   sandbox.
 - Steam is a native module. The Steamworks SDK is installed separately and is
