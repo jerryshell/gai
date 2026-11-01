@@ -30,8 +30,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GAI_DIR = ROOT / ".gai"
 GAI_GAME = os.environ.get("GAI_GAME")
-GAME_DIR = Path(GAI_GAME).expanduser().resolve() if GAI_GAME else ROOT / "game"
-RUNTIME_DIR = GAME_DIR / ".gai" if GAI_GAME else GAI_DIR
+
+
+def resolve_game_dir() -> tuple[Path, str]:
+    """Work out which project this command is about, and say how it was chosen.
+
+    `GAI_GAME` wins. Otherwise a project in the current directory wins over the
+    starter game bundled with the engine: running `gai check` inside a project
+    used to check the starter instead, quietly, and the result looked real.
+    """
+    if GAI_GAME:
+        return Path(GAI_GAME).expanduser().resolve(), "GAI_GAME"
+    here = Path.cwd().resolve()
+    if (here / "project.godot").is_file():
+        return here, "current directory"
+    bundled = ROOT / "game"
+    if (bundled / "project.godot").is_file():
+        return bundled, "bundled starter game"
+    return here, "current directory"
+
+
+GAME_DIR, GAME_SOURCE = resolve_game_dir()
+RUNTIME_DIR = GAI_DIR if GAME_SOURCE == "bundled starter game" else GAME_DIR / ".gai"
 BIN_DIR = GAI_DIR / "bin"
 LOG_DIR = RUNTIME_DIR / "logs"
 UPSTREAM_FILE = GAI_DIR / "upstream.json"
@@ -477,6 +497,7 @@ def require_game() -> None:
     project = GAME_DIR / "project.godot"
     if not project.is_file():
         die(f"`{show_path(project)}` is missing. Point `GAI_GAME` at a Godot project, or restore the starter game from git.")
+
 
 
 def numeric_version(text: str):
@@ -1088,6 +1109,173 @@ def ensure_game_import(engine, timeout: float, quiet: bool = False) -> bool:
     return True
 
 
+SHOT_SCRIPT = """extends Node
+
+var _times: Array[float] = []
+var _out: String = ""
+var _name: String = "shot"
+var _elapsed: float = 0.0
+var _index: int = 0
+
+
+func _ready() -> void:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--scene="):
+			var scene: Node = (load(arg.trim_prefix("--scene=")) as PackedScene).instantiate()
+			add_child(scene)
+		elif arg.begins_with("--times="):
+			for part in arg.trim_prefix("--times=").split(","):
+				_times.append(float(part))
+		elif arg.begins_with("--out="):
+			_out = arg.trim_prefix("--out=")
+		elif arg.begins_with("--name="):
+			_name = arg.trim_prefix("--name=")
+
+
+func _process(delta: float) -> void:
+	_elapsed += delta
+	while _index < _times.size() and _elapsed >= _times[_index]:
+		await RenderingServer.frame_post_draw
+		var path: String = _out.path_join("%s_%d.png" % [_name, _index])
+		var image: Image = get_viewport().get_texture().get_image()
+		image.save_png(path)
+		print("gai-shot: ", path, " ", image.get_width(), "x", image.get_height())
+		_index += 1
+	if _index >= _times.size():
+		get_tree().quit(0)
+"""
+
+SHOT_SCENE = """[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://.gai/shot/gai_shot.gd" id="1"]
+
+[node name="GaiShot" type="Node"]
+script = ExtResource("1")
+"""
+
+
+def write_shot_scene() -> str:
+    shot_dir = GAME_DIR / ".gai" / "shot"
+    shot_dir.mkdir(parents=True, exist_ok=True)
+    (shot_dir / "gai_shot.gd").write_text(SHOT_SCRIPT, encoding="utf-8")
+    (shot_dir / "gai_shot.tscn").write_text(SHOT_SCENE, encoding="utf-8")
+    return "res://.gai/shot/gai_shot.tscn"
+
+
+def remove_shot_scene() -> None:
+    shot_dir = GAME_DIR / ".gai" / "shot"
+    for name in ("gai_shot.gd", "gai_shot.tscn"):
+        (shot_dir / name).unlink(missing_ok=True)
+    try:
+        shot_dir.rmdir()
+    except OSError:
+        pass
+
+
+def orphan_sidecars() -> list[Path]:
+    """`.uid` and `.import` files whose asset or script is gone."""
+    orphans: list[Path] = []
+    for path in GAME_DIR.rglob("*"):
+        if path.is_dir() or any(part.startswith(".") for part in path.relative_to(GAME_DIR).parts):
+            continue
+        if path.suffix in (".uid", ".import") and not path.with_suffix("").exists():
+            orphans.append(path)
+    return sorted(orphans)
+
+
+def cmd_import(args) -> int:
+    engine = require_engine()
+    require_game()
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        result = run(
+            [engine, "--headless", "--path", GAME_DIR, "--import"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=args.timeout,
+        )
+        text = result.stdout or ""
+        code = result.returncode
+    except subprocess.TimeoutExpired:
+        print(f"import: timed out after {args.timeout}s", file=sys.stderr)
+        return 1
+    (LOG_DIR / "import.log").write_text(text, encoding="utf-8")
+    errors = collect_errors(text)
+    cached = (GAME_DIR / ".godot").is_dir()
+    ## The headless editor aborts on shutdown after a good import. The cache it
+    ## just wrote is the evidence that the import itself worked.
+    shutdown_only = all('singleton" is null' in error for error in errors)
+    if code != 0 and not (cached and shutdown_only):
+        for error in errors:
+            print(f"  {error}", file=sys.stderr)
+        print(f"import: engine exited with code {code}", file=sys.stderr)
+        return 1
+    if code != 0:
+        print("import: ok (headless shutdown noise ignored)")
+    else:
+        print("import: ok")
+    print(f"log: {show_path(LOG_DIR / 'import.log')}")
+    return 0
+
+
+def cmd_shot(args) -> int:
+    engine = require_engine()
+    require_game()
+    if args.size:
+        match = re.fullmatch(r"(\d+)x(\d+)", args.size)
+        if not match:
+            die("--size must look like 640x360")
+    out_dir = Path(args.out).expanduser().resolve() if args.out else GAME_DIR / ".gai" / "shots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    scene = args.scene
+    if not scene.startswith("res://"):
+        local = Path(scene).expanduser()
+        try:
+            scene = "res://" + local.resolve().relative_to(GAME_DIR).as_posix()
+        except ValueError:
+            die(f"{scene} is not inside {GAME_DIR}")
+    argv = [str(engine), "--path", str(GAME_DIR), "--audio-driver", "Dummy"]
+    if args.size:
+        argv.extend(["--resolution", args.size])
+    argv.append(write_shot_scene())
+    argv.extend(
+        ["--", f"--scene={scene}", f"--times={args.at}", f"--out={out_dir}", f"--name={args.name}"]
+    )
+    if not os.environ.get("DISPLAY") and shutil.which("xvfb-run"):
+        argv = ["xvfb-run", "-a", *argv]
+    try:
+        result = run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=args.timeout,
+        )
+        text = result.stdout or ""
+        code = result.returncode
+    except subprocess.TimeoutExpired:
+        remove_shot_scene()
+        print(f"shot: timed out after {args.timeout}s", file=sys.stderr)
+        return 1
+    finally:
+        remove_shot_scene()
+    (LOG_DIR / "shot.log").write_text(text, encoding="utf-8")
+    shots = re.findall(r"gai-shot: (\S+)", text)
+    if code != 0 or not shots:
+        for line in text.splitlines():
+            if ERROR_LINE.match(line.strip()):
+                print("  " + line.strip(), file=sys.stderr)
+        print(f"shot: no frames captured (exit {code})", file=sys.stderr)
+        print(f"log: {show_path(LOG_DIR / 'shot.log')}", file=sys.stderr)
+        return 1
+    for path in shots:
+        print(f"shot: {show_path(Path(path))}")
+    print(f"log: {show_path(LOG_DIR / 'shot.log')}")
+    return 0
+
+
 def discover_scene_tests(directories: list[str]) -> list[str]:
     found: list[str] = []
     for directory in directories:
@@ -1628,8 +1816,13 @@ def cmd_check(args) -> int:
             )
         )
 
+    orphans = orphan_sidecars()
+    for path in orphans:
+        failures_preview = path.relative_to(GAME_DIR).as_posix()
+        print(f"check: {failures_preview} has no target left", file=sys.stderr)
+
     output = []
-    failures = list(preflight)
+    failures = list(preflight) + [f"orphaned {path.relative_to(GAME_DIR).as_posix()}" for path in orphans]
     timed_out = False
     try:
         for step in steps:
@@ -3157,6 +3350,19 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--no-mcp", action="store_true", help="do not write .gai/mcp.json")
     init.set_defaults(func=cmd_init)
 
+    import_cmd = sub.add_parser("import", help="import the project's assets")
+    import_cmd.add_argument("--timeout", type=int, default=300, help="seconds (default: 300)")
+    import_cmd.set_defaults(func=cmd_import)
+
+    shot = sub.add_parser("shot", help="render a scene to PNG at chosen moments")
+    shot.add_argument("scene", help="scene to render, such as res://views/main_menu/main_menu.tscn")
+    shot.add_argument("--at", default="0.5", help="comma separated seconds to capture (default: 0.5)")
+    shot.add_argument("--size", default="", help="window size, such as 640x360")
+    shot.add_argument("--out", default="", help="output directory (default: <game>/.gai/shots)")
+    shot.add_argument("--name", default="shot", help="file name prefix (default: shot)")
+    shot.add_argument("--timeout", type=int, default=120, help="seconds (default: 120)")
+    shot.set_defaults(func=cmd_shot)
+
     check = sub.add_parser("check", help="import assets, parse scripts, run the main scene and game tests")
     check.add_argument("--frames", type=int, default=5, help="frames to run (default: 5)")
     check.add_argument("--timeout", type=int, default=120, help="seconds per step (default: 120)")
@@ -3384,9 +3590,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+ENGINE_ONLY_COMMANDS = {"version", "build", "engine", "upstream"}
+
+
+def announce_game() -> None:
+    """Say it out loud when the fallback starter game is what runs.
+
+    The fallback used to be silent: `check` run inside a project reported on the
+    starter game, and the result looked like the project's own.
+    """
+    if GAME_SOURCE != "bundled starter game":
+        return
+    print(
+        f"gai: no project here, so this runs against the bundled starter game at {GAME_DIR}",
+        file=sys.stderr,
+    )
+    print(
+        "gai: set GAI_GAME=/path/to/your/project (or run gai inside it) to target your game",
+        file=sys.stderr,
+    )
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    command = getattr(args, "command", None) or ""
+    if command not in ENGINE_ONLY_COMMANDS:
+        announce_game()
     return args.func(args)
 
 

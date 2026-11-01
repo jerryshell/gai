@@ -88,6 +88,13 @@ class CheckTest(unittest.TestCase):
         self.assertIn("Parse Error", result.stdout)
 
     @unittest.skipUnless(ENGINE, "no engine binary")
+    def test_orphaned_sidecar_fails(self):
+        (self.tmp / "game" / "ghost.gd.uid").write_text("uid://abc\n", encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ghost.gd.uid has no target left", result.stderr)
+
+    @unittest.skipUnless(ENGINE, "no engine binary")
     def test_bootstrap_with_engine(self):
         result = self.run_gai("bootstrap")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

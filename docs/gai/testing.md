@@ -224,3 +224,12 @@ test that should pass.
 ## Version
 
 The result JSON has `"version": 1`. A change to the fields must raise it.
+
+## Importing and looking at a frame
+
+- `bin/gai import` runs the headless import and treats the engine's shutdown
+  abort as success when the cache was written. Call it instead of retrying
+  `--import` by hand.
+- `bin/gai shot res://views/main_menu/main_menu.tscn --at 0.4,1.2 --size 640x360`
+  renders the scene and writes PNGs to `<game>/.gai/shots`. Use it to check a
+  layout or an effect without building a throwaway capture scene.

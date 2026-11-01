@@ -86,12 +86,20 @@ The `branding` feature claims `version.py` and sets `name = "gai"`. The binary
 name and `short_name` stay `godot` while the build system depends on them. Full
 UI branding is a feature, not a one-off edit.
 
+## Which game a command runs against
+
+`GAI_GAME` wins. Without it, gai looks for `project.godot` in the current
+directory and uses that project; only when there is none does it fall back to
+the starter game in `game/`, and then it says so on stderr before running. The
+fallback used to be silent, so a `check` run inside a project reported on the
+starter game and the result read as the project's.
+
 ## What check proves
 
-Godot exits 0 on script errors. `bin/gai check` imports assets, parses every
+Godot exits 0 on script errors. `bin/gai check` imports assets, compiles every
 script, runs the main scene, and runs `game/tests` when the runner exists. It
-also refuses an engine or `version.py` that does not match the base tag. This is
-the game gate.
+also refuses an engine or `version.py` that does not match the base tag, and it
+fails on a `.uid` or `.import` file whose target is gone. This is the game gate.
 
 ## Limits
 
@@ -101,8 +109,13 @@ the game gate.
   build.
 - The agent bridge exposes native runtime and editor reflection. GDScript
   `class_name` classes are reached through handles. It supports up to 8 clients
-  and signal event subscriptions. Event replay, batch requests, export helpers,
-  and headless screenshots are not implemented.
+  and signal event subscriptions. Event replay, batch requests and export
+  helpers are not implemented.
+- `bin/gai shot` renders a scene to PNG, so it needs a display. Without
+  `$DISPLAY` it wraps the engine in `xvfb-run` when that is installed.
+- `--check-only --script <file>` does not register the project's autoloads, so
+  it reports every autoload name as unknown. `bin/gai check` compiles scripts
+  inside a scene instead, where the autoloads exist.
 - The bridge token grants full local access, including `OS.execute`. It is not a
   sandbox.
 - Steam is a native module. The Steamworks SDK is installed separately and is
