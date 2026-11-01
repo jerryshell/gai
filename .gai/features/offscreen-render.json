@@ -1,0 +1,16 @@
+{
+  "title": "Offscreen rendering without a display",
+  "status": "active",
+  "risk": "medium",
+  "paths": [
+    "servers/display/display_server_offscreen.cpp",
+    "servers/display/display_server_offscreen.h",
+    "servers/display/display_server.cpp",
+    "servers/rendering/rendering_device.cpp"
+  ],
+  "docs": [
+    "docs/gai/headless.md"
+  ],
+  "tests": [],
+  "notes": "A Vulkan device with no surface and no swap chain: the root viewport never attaches to a screen, so every viewport renders into its own texture and Viewport.get_texture().get_image() reads it back. Selected with --display-driver offscreen. The swap chain check stays quiet for a device without a main window."
+}

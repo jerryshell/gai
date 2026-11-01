@@ -19,34 +19,37 @@ the viewport scales them by its final transform, so multiply by
 `get_viewport().get_final_transform()` before sending, or a non-1.0 content
 scale puts every click in the wrong place.
 
-## Rendering does not
+## Rendering works, through the offscreen display server
 
-`--headless` installs `RasterizerDummy` in `Main::setup()` and the headless
-display server never creates a rendering context. `get_viewport().get_texture()
-.get_image()` therefore returns null: there are no pixels to read.
+`--headless` still installs `RasterizerDummy` in `Main::setup()` and never
+creates a rendering context: under plain `--headless`,
+`get_viewport().get_texture().get_image()` returns null.
 
-`bin/gai shot` renders anyway by starting its own Xvfb on a free display,
-running the engine there, capturing PNGs and stopping the server again. `$DISPLAY`
-is used when it points at a live socket. `bin/gai doctor` says which of the two
-applies.
+`--display-driver offscreen --rendering-driver vulkan` is the renderer without a
+window. It creates a Vulkan device with no surface and no swap chain, so the
+root viewport never attaches to a screen and every viewport renders into its own
+texture, which is exactly what a screenshot reads. On a machine with no GPU,
+Mesa's `lavapipe` (`lvp_icd.json`) provides the device.
 
-## What native offscreen rendering would take
+`bin/gai shot` tries this first and prints `shot: rendered with offscreen`. When
+the engine has no offscreen driver it falls back to a private Xvfb on a free
+display, which it starts and stops itself. `bin/gai doctor` reports both.
 
-The renderer choice belongs to the display server, not to a flag, so this is a
-new display server rather than a switch:
+## How the offscreen display server is built
 
-1. `DisplayServerOffscreen` with the window and input surface of the headless
-   one, plus a rendering context. X11 does the equivalent in
-   `display_server_x11.cpp`.
-2. A context driver that creates a Vulkan instance and device without a surface.
-   `RenderingContextDriverVulkan` already separates that work from the surface;
-   only the X11 subclass creates one.
-3. No swapchain: `RendererCompositorRD::blit_render_targets_to_screen` requires
-   one, and it is only reached when a viewport is attached to a screen. A window
-   that is never attached renders into its own texture, which is what
-   `get_image()` reads.
-4. `lavapipe` (Mesa's software Vulkan) makes the result testable on a machine
-   with no GPU; it is present here as `lvp_icd.json`.
+The renderer choice belongs to the display server, so this is a display server
+rather than a switch:
 
-Until that exists, `gai shot` is the supported way to look at a frame, and the
-Xvfb dependency is gai's to manage rather than the caller's.
+1. `DisplayServerOffscreen` extends the headless one, so it inherits the window
+   size, the input dispatch and every window stub. It adds a rendering context.
+2. The context is `RenderingContextDriverVulkan` itself. It already separates
+   instance and device creation from surfaces; only the X11 subclass creates
+   one, and the base class builds a device without it.
+3. `RenderingDevice::initialize(context, INVALID_WINDOW_ID)` skips the surface
+   lookup. With no main window the device is not the main instance, so no swap
+   chain is created.
+4. `RenderingDevice::screen_prepare_for_drawing` stays quiet for that case:
+   there is nothing to present, and the frame is already in its texture.
+
+`gai shot` renders through it with no display at all; Xvfb is only a fallback for
+an engine that predates the driver.

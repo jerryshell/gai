@@ -15,6 +15,10 @@ HEADLESS = shutil.which("xvfb-run") or os.environ.get("DISPLAY")
 
 
 def local_engine():
+    for pattern in ("bin/godot.linuxbsd.editor.x86_64", "bin/godot.macos.editor.universal", "bin/godot.windows.editor.x86_64.exe"):
+        path = ROOT / pattern
+        if path.is_file():
+            return str(path)
     for name in ("godot", "godot.exe"):
         path = ROOT / ".gai" / "bin" / name
         if path.is_file():

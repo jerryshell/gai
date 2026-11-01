@@ -5379,7 +5379,15 @@ Error RenderingDevice::screen_prepare_for_drawing(DisplayServerEnums::WindowID p
 
 	// After submitting work, acquire the swapchain image(s).
 	HashMap<DisplayServerEnums::WindowID, RDD::SwapChainID>::ConstIterator it = screen_swap_chains.find(p_screen);
-	ERR_FAIL_COND_V_MSG(it == screen_swap_chains.end(), ERR_CANT_CREATE, "A swap chain was not created for the screen.");
+	if (it == screen_swap_chains.end()) {
+		// A device created without a main window, such as the offscreen display
+		// server, has no swap chain and nothing to present: the frame is already
+		// in its viewport texture. Staying quiet keeps the per frame noise out.
+		if (!is_main_instance) {
+			return ERR_CANT_CREATE;
+		}
+		ERR_FAIL_V_MSG(ERR_CANT_CREATE, "A swap chain was not created for the screen.");
+	}
 
 	// Erase the framebuffer corresponding to this screen from the map in case any of the operations fail.
 	screen_framebuffers.erase(p_screen);
@@ -5444,7 +5452,15 @@ int RenderingDevice::screen_get_pre_rotation_degrees(DisplayServerEnums::WindowI
 	_THREAD_SAFE_METHOD_
 
 	HashMap<DisplayServerEnums::WindowID, RDD::SwapChainID>::ConstIterator it = screen_swap_chains.find(p_screen);
-	ERR_FAIL_COND_V_MSG(it == screen_swap_chains.end(), ERR_CANT_CREATE, "A swap chain was not created for the screen.");
+	if (it == screen_swap_chains.end()) {
+		// A device created without a main window, such as the offscreen display
+		// server, has no swap chain and nothing to present: the frame is already
+		// in its viewport texture. Staying quiet keeps the per frame noise out.
+		if (!is_main_instance) {
+			return ERR_CANT_CREATE;
+		}
+		ERR_FAIL_V_MSG(ERR_CANT_CREATE, "A swap chain was not created for the screen.");
+	}
 
 	return driver->swap_chain_get_pre_rotation_degrees(it->value);
 }

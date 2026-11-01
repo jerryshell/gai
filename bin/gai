@@ -99,6 +99,7 @@ WORKSPACE_FILES = (
     "tests/test_game_dir.py",
     "tests/test_game_tests.py",
     "tests/test_shot.py",
+    "tests/test_shot_offscreen.py",
     "tests/test_mcp.py",
     "tests/test_steam.py",
     "tests/test_upstream.py",
@@ -1147,9 +1148,15 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	_elapsed += delta
 	while _index < _times.size() and _elapsed >= _times[_index]:
-		await RenderingServer.frame_post_draw
-		var path: String = _out.path_join("%s_%d.png" % [_name, _index])
+		## Drawn here rather than awaited: an offscreen device has no window and
+		## never emits frame_post_draw.
+		RenderingServer.force_draw()
 		var image: Image = get_viewport().get_texture().get_image()
+		if image == null:
+			print("gai-shot: nothing to read back")
+			get_tree().quit(1)
+			return
+		var path: String = _out.path_join("%s_%d.png" % [_name, _index])
 		image.save_png(path)
 		print("gai-shot: ", path, " ", image.get_width(), "x", image.get_height())
 		_index += 1
@@ -1316,28 +1323,58 @@ def cmd_shot(args) -> int:
             scene = "res://" + local.resolve().relative_to(GAME_DIR).as_posix()
         except ValueError:
             die(f"{scene} is not inside {GAME_DIR}")
-    argv = [str(engine), "--path", str(GAME_DIR), "--audio-driver", "Dummy"]
+    scene_path = write_shot_scene()
+    tail = ["--", f"--scene={scene}", f"--times={args.at}", f"--out={out_dir}", f"--name={args.name}"]
+    prefix = [str(engine), "--path", str(GAME_DIR), "--audio-driver", "Dummy"]
     if args.size:
-        argv.extend(["--resolution", args.size])
-    argv.append(write_shot_scene())
-    argv.extend(
-        ["--", f"--scene={scene}", f"--times={args.at}", f"--out={out_dir}", f"--name={args.name}"]
-    )
+        prefix.extend(["--resolution", args.size])
+
+    attempts: list[tuple[str, list[str]]] = []
+    if args.display in ("auto", "offscreen"):
+        attempts.append(
+            ("offscreen", prefix + ["--display-driver", "offscreen", "--rendering-driver", "vulkan"] + [scene_path] + tail)
+        )
+    if args.display in ("auto", "x11"):
+        attempts.append(("display", prefix + [scene_path] + tail))
+
+    text = ""
+    code = 1
+    used = ""
     try:
-        with VirtualDisplay() as display:
-            result = run(
-                argv,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=args.timeout,
-                env=display.environ(),
-            )
+        for name, argv in attempts:
+            try:
+                if name == "offscreen":
+                    result = run(
+                        argv,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        timeout=args.timeout,
+                    )
+                else:
+                    with VirtualDisplay() as display:
+                        result = run(
+                            argv,
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            timeout=args.timeout,
+                            env=display.environ(),
+                        )
+            except subprocess.TimeoutExpired:
+                print(f"shot: {name} timed out after {args.timeout}s", file=sys.stderr)
+                continue
             text = result.stdout or ""
             code = result.returncode
-    except subprocess.TimeoutExpired:
-        print(f"shot: timed out after {args.timeout}s", file=sys.stderr)
-        return 1
+            if args.verbose:
+                print(text.rstrip())
+            if code == 0 and "gai-shot: " in text:
+                used = name
+                break
+            if args.display != "auto":
+                break
+            if name == "offscreen" and args.display == "auto":
+                print("shot: no offscreen renderer, falling back to a display", file=sys.stderr)
     finally:
         remove_shot_scene()
     (LOG_DIR / "shot.log").write_text(text, encoding="utf-8")
@@ -1349,6 +1386,8 @@ def cmd_shot(args) -> int:
         print(f"shot: no frames captured (exit {code})", file=sys.stderr)
         print(f"log: {show_path(LOG_DIR / 'shot.log')}", file=sys.stderr)
         return 1
+    if used:
+        print(f"shot: rendered with {used}")
     for path in shots:
         print(f"shot: {show_path(Path(path))}")
     print(f"log: {show_path(LOG_DIR / 'shot.log')}")
@@ -3293,6 +3332,39 @@ def cmd_export_web(args) -> int:
     return 0
 
 
+def offscreen_render_ready(engine) -> bool:
+    """Whether this engine can render without a display.
+
+    The offscreen display server was added to the fork; an older binary fails to
+    create it, which is what this checks by actually starting it.
+    """
+    if not (GAME_DIR / "project.godot").is_file():
+        return False
+    try:
+        result = run(
+            [
+                str(engine),
+                "--path",
+                str(GAME_DIR),
+                "--audio-driver",
+                "Dummy",
+                "--display-driver",
+                "offscreen",
+                "--rendering-driver",
+                "vulkan",
+                "--quit-after",
+                "1",
+            ],
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
 def cmd_doctor(args) -> int:
     problems = []
     warnings = []
@@ -3300,14 +3372,19 @@ def cmd_doctor(args) -> int:
     print(f"repo {ROOT}")
     print(f"python {platform.python_version()}")
 
+    engine_path = find_engine()
+    if engine_path is not None and (GAME_DIR / "project.godot").is_file():
+        if offscreen_render_ready(engine_path):
+            print("render offscreen (vulkan, no display needed)")
+        else:
+            print("render offscreen unavailable")
     display = os.environ.get("DISPLAY", "")
     if display and VirtualDisplay._reachable(display):
         print(f"display {display} (from $DISPLAY)")
     elif shutil.which("Xvfb"):
         print("display Xvfb (started on demand for rendering)")
     else:
-        warnings.append("no display and no Xvfb: `shot` cannot render")
-        print("display none")
+        print("display none (shot falls back to offscreen only)")
 
     state = load_upstream()
     print(f"upstream {state['tag']} {state['commit'][:8]}")
@@ -3454,6 +3531,13 @@ def build_parser() -> argparse.ArgumentParser:
     shot.add_argument("--out", default="", help="output directory (default: <game>/.gai/shots)")
     shot.add_argument("--name", default="shot", help="file name prefix (default: shot)")
     shot.add_argument("--timeout", type=int, default=120, help="seconds (default: 120)")
+    shot.add_argument(
+        "--display",
+        choices=["auto", "offscreen", "x11"],
+        default="auto",
+        help="offscreen renders without a display; auto tries it first (default: auto)",
+    )
+    shot.add_argument("--verbose", action="store_true", help="print the engine output")
     shot.set_defaults(func=cmd_shot)
 
     check = sub.add_parser("check", help="import assets, parse scripts, run the main scene and game tests")

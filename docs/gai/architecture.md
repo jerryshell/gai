@@ -111,8 +111,9 @@ fails on a `.uid` or `.import` file whose target is gone. This is the game gate.
   `class_name` classes are reached through handles. It supports up to 8 clients
   and signal event subscriptions. Event replay, batch requests and export
   helpers are not implemented.
-- `bin/gai shot` renders a scene to PNG, so it needs a display. Without
-  `$DISPLAY` it wraps the engine in `xvfb-run` when that is installed.
+- `bin/gai shot` renders a scene to PNG through the offscreen display server,
+  with no display at all. An engine without that driver falls back to a private
+  Xvfb.
 - The headless display server carries a window size, so the root Window can map
   input into the viewport and GUI hover and clicks work without a display.
   Before that it reported `Size2i()`, every event coordinate landed outside the

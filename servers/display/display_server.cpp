@@ -42,6 +42,7 @@ STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 #include "scene/resources/texture.h"
 #include "servers/display/accessibility_server.h"
 #include "servers/display/display_server_headless.h"
+#include "servers/display/display_server_offscreen.h"
 #include "servers/display/native_menu.h"
 #include "servers/rendering/rendering_server.h"
 
@@ -65,10 +66,17 @@ bool DisplayServer::window_early_clear_override_enabled = false;
 Color DisplayServer::window_early_clear_override_color = Color(0, 0, 0, 0);
 
 DisplayServer::DisplayServerCreate DisplayServer::server_create_functions[DisplayServer::MAX_SERVERS] = {
+#if defined(VULKAN_ENABLED)
+	{ "offscreen", &DisplayServerOffscreen::create_func, &DisplayServerOffscreen::get_rendering_drivers_func },
+#endif
 	{ "headless", &DisplayServerHeadless::create_func, &DisplayServerHeadless::get_rendering_drivers_func }
 };
 
+#if defined(VULKAN_ENABLED)
+int DisplayServer::server_create_count = 2;
+#else
 int DisplayServer::server_create_count = 1;
+#endif
 
 void DisplayServer::help_set_search_callbacks(const Callable &p_search_callback, const Callable &p_action_callback) {
 	WARN_PRINT("Native help is not supported by this display server.");
