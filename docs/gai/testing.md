@@ -243,4 +243,5 @@ live bytecode is replaced underneath the running instance.
   `--import` by hand.
 - `bin/gai shot res://views/main_menu/main_menu.tscn --at 0.4,1.2 --size 640x360`
   renders the scene and writes PNGs to `<game>/.gai/shots`. Use it to check a
-  layout or an effect without building a throwaway capture scene.
+  layout or an effect without building a throwaway capture scene. It starts its
+  own Xvfb when needed; see [headless.md](headless.md).

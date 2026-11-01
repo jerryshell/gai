@@ -1229,6 +1229,74 @@ def cmd_import(args) -> int:
     return 0
 
 
+
+class VirtualDisplay:
+    """A private X server for commands that need one.
+
+    `gai shot` renders a frame, and the headless display server has no
+    rasteriser, so a real display is needed. Rather than ask the caller to run
+    `xvfb-run`, gai starts its own Xvfb on a free display number and stops it
+    again. An existing $DISPLAY is used when it works.
+    """
+
+    def __init__(self) -> None:
+        self.process = None
+        self.display = ""
+        self._created = False
+
+    def __enter__(self) -> "VirtualDisplay":
+        existing = os.environ.get("DISPLAY")
+        if existing and self._reachable(existing):
+            self.display = existing
+            return self
+        binary = shutil.which("Xvfb")
+        if binary is None:
+            die(
+                "rendering needs a display and Xvfb is not installed. "
+                "Install xvfb, or run with $DISPLAY set."
+            )
+        for number in range(99, 130):
+            display = f":{number}"
+            if Path(f"/tmp/.X11-unix/X{number}").exists():
+                continue
+            process = subprocess.Popen(
+                [binary, display, "-screen", "0", "1280x720x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for _ in range(100):
+                if Path(f"/tmp/.X11-unix/X{number}").exists():
+                    break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.02)
+            if process.poll() is None and Path(f"/tmp/.X11-unix/X{number}").exists():
+                self.process = process
+                self.display = display
+                self._created = True
+                return self
+            process.kill()
+        die("could not start Xvfb on any display between :99 and :129")
+
+    def __exit__(self, *_) -> None:
+        if self.process is not None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+
+    @staticmethod
+    def _reachable(display: str) -> bool:
+        number = display.rsplit(":", 1)[-1].split(".")[0]
+        return Path(f"/tmp/.X11-unix/X{number}").exists()
+
+    def environ(self) -> dict:
+        env = dict(os.environ)
+        env["DISPLAY"] = self.display
+        return env
+
+
 def cmd_shot(args) -> int:
     engine = require_engine()
     require_game()
@@ -1253,20 +1321,19 @@ def cmd_shot(args) -> int:
     argv.extend(
         ["--", f"--scene={scene}", f"--times={args.at}", f"--out={out_dir}", f"--name={args.name}"]
     )
-    if not os.environ.get("DISPLAY") and shutil.which("xvfb-run"):
-        argv = ["xvfb-run", "-a", *argv]
     try:
-        result = run(
-            argv,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=args.timeout,
-        )
-        text = result.stdout or ""
-        code = result.returncode
+        with VirtualDisplay() as display:
+            result = run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=args.timeout,
+                env=display.environ(),
+            )
+            text = result.stdout or ""
+            code = result.returncode
     except subprocess.TimeoutExpired:
-        remove_shot_scene()
         print(f"shot: timed out after {args.timeout}s", file=sys.stderr)
         return 1
     finally:
@@ -3230,6 +3297,15 @@ def cmd_doctor(args) -> int:
     print(f"gai {gai_version()}")
     print(f"repo {ROOT}")
     print(f"python {platform.python_version()}")
+
+    display = os.environ.get("DISPLAY", "")
+    if display and VirtualDisplay._reachable(display):
+        print(f"display {display} (from $DISPLAY)")
+    elif shutil.which("Xvfb"):
+        print("display Xvfb (started on demand for rendering)")
+    else:
+        warnings.append("no display and no Xvfb: `shot` cannot render")
+        print("display none")
 
     state = load_upstream()
     print(f"upstream {state['tag']} {state['commit'][:8]}")
