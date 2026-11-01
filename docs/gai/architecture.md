@@ -113,6 +113,10 @@ fails on a `.uid` or `.import` file whose target is gone. This is the game gate.
   helpers are not implemented.
 - `bin/gai shot` renders a scene to PNG, so it needs a display. Without
   `$DISPLAY` it wraps the engine in `xvfb-run` when that is installed.
+- The headless display server carries a window size, so the root Window can map
+  input into the viewport and GUI hover and clicks work without a display.
+  Before that it reported `Size2i()`, every event coordinate landed outside the
+  viewport, and a UI click audit had to run under `xvfb-run`.
 - `--check-only --script <file>` does not register the project's autoloads, so
   it reports every autoload name as unknown: the analyzer reads a scene-based
   autoload's type from the live node. `bin/gai check --script <file>` compiles
