@@ -55,6 +55,11 @@ Run these from the repository root.
 | `bin/gai export web` | Exports a web build. Needs a `Web` preset and export templates. |
 | `bin/gai export windows` / `linux` | Exports a native build with preflight, Steam runtime copy, archive, and checksums. |
 | `bin/gai init` | Adds AGENTS, docs, MCP config, and a test harness or scene-test guidance to a game. |
+
+Before pushing, run `pre-commit run --files $(git diff --cached --name-only)`.
+The fork runs Godot's static checks (shebang modes, clang-format, ruff, mypy,
+codespell, include order) that `bin/gai check` does not, so a commit can pass the
+game gate and still fail the push.
 | `bin/gai steam status` | Shows the Steam module, the SDK, and the runtime library. |
 | `bin/gai engine install` | Downloads the official fallback engine into `.gai/bin/`. It has no gai features. |
 | `bin/gai upstream check` | Warns when an engine change has no feature owner; `--strict` fails. |
