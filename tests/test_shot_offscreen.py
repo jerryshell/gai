@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def local_engine():
-    for pattern in ("bin/godot.linuxbsd.editor.x86_64", "bin/godot.macos.editor.universal", "bin/godot.windows.editor.x86_64.exe"):
+    for pattern in (
+        "bin/godot.linuxbsd.editor.x86_64",
+        "bin/godot.macos.editor.universal",
+        "bin/godot.windows.editor.x86_64.exe",
+    ):
         path = ROOT / pattern
         if path.is_file():
             return str(path)
@@ -34,9 +38,7 @@ class OffscreenShotTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "bin").mkdir()
         shutil.copy2(ROOT / "bin" / "gai", self.tmp / "bin" / "gai")
-        shutil.copytree(
-            ROOT / "game", self.tmp / "game", ignore=shutil.ignore_patterns(".godot")
-        )
+        shutil.copytree(ROOT / "game", self.tmp / "game", ignore=shutil.ignore_patterns(".godot"))
         (self.tmp / ".gai").mkdir()
         (self.tmp / ".gai" / "version").write_text("0.0.0-test\n", encoding="utf-8")
 
@@ -59,14 +61,20 @@ class OffscreenShotTest(unittest.TestCase):
 
     def offscreen_supported(self) -> bool:
         """Start the driver directly, so a broken shot is not mistaken for an old engine."""
+        assert ENGINE is not None
         result = subprocess.run(
             [
                 ENGINE,
-                "--path", str(self.tmp / "game"),
-                "--audio-driver", "Dummy",
-                "--display-driver", "offscreen",
-                "--rendering-driver", "vulkan",
-                "--quit-after", "1",
+                "--path",
+                str(self.tmp / "game"),
+                "--audio-driver",
+                "Dummy",
+                "--display-driver",
+                "offscreen",
+                "--rendering-driver",
+                "vulkan",
+                "--quit-after",
+                "1",
             ],
             text=True,
             stdout=subprocess.DEVNULL,
@@ -82,16 +90,26 @@ class OffscreenShotTest(unittest.TestCase):
             self.skipTest("this engine has no offscreen renderer")
         out = self.tmp / "shots"
         result = self.run_gai(
-            "shot", "res://scenes/main.tscn", "--at", "0.2", "--size", "320x180",
-            "--out", str(out), "--name", "frame", "--display", "offscreen",
+            "shot",
+            "res://scenes/main.tscn",
+            "--at",
+            "0.2",
+            "--size",
+            "320x180",
+            "--out",
+            str(out),
+            "--name",
+            "frame",
+            "--display",
+            "offscreen",
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         image = out / "frame_0.png"
         self.assertTrue(image.is_file())
         from PIL import Image
 
-        colours = Image.open(image).convert("RGB").getcolors(maxcolors=1 << 20)
-        self.assertGreater(len(colours or []), 1, "the frame is a single flat colour")
+        colors = Image.open(image).convert("RGB").getcolors(maxcolors=1 << 20)
+        self.assertGreater(len(colors or []), 1, "the frame is a single flat color")
 
 
 if __name__ == "__main__":

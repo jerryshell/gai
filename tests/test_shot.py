@@ -15,7 +15,11 @@ HEADLESS = shutil.which("xvfb-run") or os.environ.get("DISPLAY")
 
 
 def local_engine():
-    for pattern in ("bin/godot.linuxbsd.editor.x86_64", "bin/godot.macos.editor.universal", "bin/godot.windows.editor.x86_64.exe"):
+    for pattern in (
+        "bin/godot.linuxbsd.editor.x86_64",
+        "bin/godot.macos.editor.universal",
+        "bin/godot.windows.editor.x86_64.exe",
+    ):
         path = ROOT / pattern
         if path.is_file():
             return str(path)
@@ -36,9 +40,7 @@ class ShotTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "bin").mkdir()
         shutil.copy2(ROOT / "bin" / "gai", self.tmp / "bin" / "gai")
-        shutil.copytree(
-            ROOT / "game", self.tmp / "game", ignore=shutil.ignore_patterns(".godot")
-        )
+        shutil.copytree(ROOT / "game", self.tmp / "game", ignore=shutil.ignore_patterns(".godot"))
         (self.tmp / ".gai").mkdir()
         (self.tmp / ".gai" / "version").write_text("0.0.0-test\n", encoding="utf-8")
 
@@ -60,8 +62,16 @@ class ShotTest(unittest.TestCase):
     def test_renders_two_frames(self):
         out = self.tmp / "shots"
         result = self.run_gai(
-            "shot", "res://scenes/main.tscn", "--at", "0.2,0.4", "--size", "320x180",
-            "--out", str(out), "--name", "frame",
+            "shot",
+            "res://scenes/main.tscn",
+            "--at",
+            "0.2,0.4",
+            "--size",
+            "320x180",
+            "--out",
+            str(out),
+            "--name",
+            "frame",
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue((out / "frame_0.png").is_file())

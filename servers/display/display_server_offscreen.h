@@ -30,7 +30,7 @@
 
 #pragma once
 
-#include "display_server_headless.h"
+#include "servers/display/display_server_headless.h"
 
 class RenderingContextDriver;
 class RenderingDevice;

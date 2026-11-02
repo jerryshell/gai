@@ -26,9 +26,7 @@ class GameDirTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         (self.tmp / "bin").mkdir()
         shutil.copy2(ROOT / "bin" / "gai", self.tmp / "bin" / "gai")
-        shutil.copytree(
-            ROOT / "game", self.tmp / "game", ignore=shutil.ignore_patterns(".godot")
-        )
+        shutil.copytree(ROOT / "game", self.tmp / "game", ignore=shutil.ignore_patterns(".godot"))
         (self.tmp / ".gai").mkdir()
         (self.tmp / ".gai" / "version").write_text("0.0.0-test\n", encoding="utf-8")
         state = {
@@ -37,9 +35,7 @@ class GameDirTest(unittest.TestCase):
             "commit": "0" * 40,
             "merged_at": "2026-10-25",
         }
-        (self.tmp / ".gai" / "upstream.json").write_text(
-            json.dumps(state, indent=2) + "\n", encoding="utf-8"
-        )
+        (self.tmp / ".gai" / "upstream.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
         (self.tmp / "version.py").write_text(VERSION_PY, encoding="utf-8")
         self.project = self.tmp / "mygame"
         self.project.mkdir()
