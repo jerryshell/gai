@@ -3562,11 +3562,16 @@ def game_scripts(paths: list[str]) -> list[str]:
     project's code to reformat. A named path is always honored, so a project
     that does own its addons can still pass the folder.
 
+    A `.gdignore` directory is different: Godot leaves it out of the project,
+    so gai refuses it even when named. That keeps a vendored engine checkout
+    inside the game folder out of every walk.
+
     With `paths`, keep only the named scripts or the scripts below the named
     folders. A name that is not a script the formatter can reach is a usage
     error, not a silent skip.
     """
     walked = _relative_scripts()
+    outside = _outside_prefixes()
     found = [script for script in walked if not script.startswith("addons/")]
     if not paths:
         return found
@@ -3581,6 +3586,8 @@ def game_scripts(paths: list[str]) -> list[str]:
         name = relative.as_posix()
         while name.startswith("./"):
             name = name[2:]
+        if any(relative.parts[: len(prefix)] == prefix for prefix in outside):
+            die(f"`{wanted}` is under a `.gdignore` directory, so it is not part of the game", 2)
         target = GAME_DIR / name
         if target.is_dir():
             prefix = name.rstrip("/") + "/"
@@ -3597,12 +3604,30 @@ def game_scripts(paths: list[str]) -> list[str]:
     return list(dict.fromkeys(selected))
 
 
+def _outside_prefixes() -> list[tuple[str, ...]]:
+    """Directories that carry a `.gdignore`, as relative path tuples."""
+    return [
+        marker.parent.relative_to(GAME_DIR).parts
+        for marker in GAME_DIR.rglob(".gdignore")
+    ]
+
+
 def _relative_scripts() -> list[str]:
-    """Every `.gd` under the game with a dot-free path, relative and posix."""
+    """Every `.gd` under the game with a dot-free path, relative and posix.
+
+    A directory that holds a `.gdignore` is not part of the Godot project, so it
+    is not the project's code either. That is how a vendored engine checkout
+    inside the game folder stays out of `gai fmt`; the engine honors the same
+    file when it builds `res://`.
+    """
+    excluded = _outside_prefixes()
     found: list[str] = []
     for path in sorted(GAME_DIR.rglob("*.gd")):
         relative = path.relative_to(GAME_DIR)
-        if any(part.startswith(".") for part in relative.parts):
+        parts = relative.parts
+        if any(part.startswith(".") for part in parts):
+            continue
+        if any(parts[: len(prefix)] == prefix for prefix in excluded):
             continue
         found.append(relative.as_posix())
     return found
