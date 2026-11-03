@@ -205,7 +205,11 @@ It is the highest gate of the paths it was given:
 | `*.md`, `docs/`, `AGENTS.md`, `tests/*.py`, `.github/` | `none` | nothing |
 | anything else | `check` | `bin/gai check` |
 
-A file under `game/tests/` gives `check`, not `script`. `--json` prints `gate`,
+A file under `game/tests/` gives `check`, not `script`. A path that git reports
+as deleted gives `check` too, because a missing script cannot be compiled and the
+scenes that referenced it are what still needs a gate.
+
+`--json` prints `gate`,
 `command`, `paths`, and one `reasons` entry per path. `--run` runs the commands
 and returns the exit code of the first failure; for the `script` gate it runs
 `check --script` once per script and stops at the first failure.

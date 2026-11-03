@@ -175,6 +175,16 @@ class NextTest(unittest.TestCase):
         self.assertEqual(payload["gate"], "script")
         self.assertEqual(payload["paths"], ["game/probe.gd"])
 
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True, text=True)
+        subprocess.run(git + ["commit", "-qm", "probe"], check=True, capture_output=True, text=True)
+        script.unlink()
+        deleted = self.run_gai("next", "--json")
+        self.assertEqual(deleted.returncode, 0, deleted.stdout + deleted.stderr)
+        payload = json.loads(deleted.stdout)
+        self.assertEqual(payload["gate"], "check")
+        self.assertEqual(payload["reasons"][0]["gate"], "check")
+        self.assertEqual(payload["reasons"][0]["rule"], "game/**/*.gd (deleted)")
+
     def test_run_with_a_docs_change_exits_zero_without_an_engine(self):
         result = self.run_gai("next", "--run", "docs/gai/build.md")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

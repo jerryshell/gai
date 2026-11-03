@@ -2296,15 +2296,20 @@ def next_rule(path: str):
     return NEXT_UNKNOWN[1], NEXT_UNKNOWN[0]
 
 
-def next_reasons(paths) -> list:
+def next_reasons(paths, deleted=()) -> list:
     reasons = []
     seen = set()
+    deleted = set(deleted)
     for path in paths:
         normalized = normalize_path(path)
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
         gate, pattern = next_rule(normalized)
+        if gate == "script" and normalized in deleted:
+            # A deleted script cannot be compiled. The import and the scenes
+            # that referenced it are what still needs a gate.
+            gate, pattern = "check", pattern + " (deleted)"
         reasons.append({"path": normalized, "gate": gate, "rule": pattern})
     return reasons
 
@@ -2353,27 +2358,39 @@ def next_command_text(commands) -> str:
     )
 
 
-def changed_paths() -> list:
-    """Read the change set from git when `next` gets no paths."""
+def status_entries() -> list:
+    """Read `git status --porcelain` as (path, status) pairs, rename targets included."""
     result = git("status", "--porcelain", check=False)
     if result.returncode != 0:
         die(f"git status failed: {(result.stderr or result.stdout).strip()}")
-    paths = []
+    entries = []
     for line in result.stdout.splitlines():
         if len(line) < 4:
             continue
+        status = line[:2]
         entry = line[3:]
         if " -> " in entry:
             entry = entry.split(" -> ", 1)[1]
         entry = entry.strip().strip('"')
         if entry:
-            paths.append(entry)
-    return paths
+            entries.append((entry, status))
+    return entries
+
+
+def changed_paths() -> list:
+    """Read the change set from git when `next` gets no paths."""
+    return [path for path, _status in status_entries()]
+
+
+def deleted_paths() -> set:
+    """Paths a git status reports as deleted, so `next` does not compile a hole."""
+    return {path for path, status in status_entries() if "D" in status}
 
 
 def cmd_next(args) -> int:
     paths = list(args.paths) if args.paths else changed_paths()
-    reasons = next_reasons(paths)
+    deleted = deleted_paths() if not args.paths else ()
+    reasons = next_reasons(paths, deleted)
     gate = next_gate(reasons)
     commands = next_commands(gate, reasons)
     if args.json:
