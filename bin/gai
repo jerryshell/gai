@@ -857,11 +857,10 @@ def engine_tree_stamp() -> dict:
         entry = line[3:].strip().strip('"')
         if " -> " in entry:
             entry = entry.split(" -> ", 1)[1]
-        if not entry or entry.startswith(("game/", "docs/", "tests/")):
-            continue
-        if entry.startswith(".gai/") and not entry.startswith(".gai/features/"):
-            continue
-        if entry in ("AGENTS.md", "README.md", "CHANGELOG.md", "NOTICE.md"):
+        # Only files the build reads: an edit to `bin/gai`, a test, or a doc
+        # cannot change a compiled byte.
+        top = entry.split("/", 1)[0]
+        if top not in STAMP_PATHS and entry not in STAMP_PATHS:
             continue
         # A status letter says a file is dirty, not what it holds. Two edits to
         # the same dirty file look identical without the content.
