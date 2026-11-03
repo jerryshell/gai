@@ -3559,7 +3559,7 @@ def game_scripts(paths: list[str]) -> list[str]:
     """Every `.gd` file under the game, relative and posix, dot parts skipped.
 
     The default walk leaves `addons/` alone: a vendored addon is not the
-    project's code to reformat. A named path is always honoured, so a project
+    project's code to reformat. A named path is always honored, so a project
     that does own its addons can still pass the folder.
 
     With `paths`, keep only the named scripts or the scripts below the named
