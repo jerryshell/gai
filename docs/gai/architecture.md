@@ -62,16 +62,22 @@ engine agent bridge exposes the engine's own reflection and object handles:
 
 - every class, property, method, signal, and singleton through `ClassDB` and
   `Object`;
+- every GDScript `class_name`, its exported properties, methods, signals,
+  constants, and doc through `script.classes` and `script.class`;
 - scene, node, resource, project, run, input, and screenshot methods;
 - runtime and editor modes.
+- the last call a fatal signal interrupted, in `.gai/logs/bridge-crash.json`, so
+  a crashed engine reads as a named call, not a dead socket.
 
 `bin/gai mcp` serves the same bridge over MCP on stdin/stdout. It is an adapter
 process, not engine code.
 
 An agent needs no new wrapper when the engine exposes a feature through
 `ClassDB` or a singleton. It discovers with `classdb.classes`, inspects with
-`object.properties/methods/signals`, and calls with `object.call`. The design is
-in `features/agent-bridge.md`.
+`object.properties/methods/signals`, and calls with `object.call`. Game scripts
+are reached with `script.classes` and `script.class`, so an agent reads a
+script's surface from the engine, not from the file. The design is in
+`features/agent-bridge.md`.
 
 ## Build gate
 
@@ -100,6 +106,19 @@ Godot exits 0 on script errors. `bin/gai check` imports assets, compiles every
 script, runs the main scene, and runs `game/tests` when the runner exists. It
 also refuses an engine or `version.py` that does not match the base tag, and it
 fails on a `.uid` or `.import` file whose target is gone. This is the game gate.
+
+Every run also writes `.gai/logs/diagnostics.json`: one record per problem with
+`schema`, `source`, `ok`, `count`, `first`, and `errors`, and each error carries
+`path`, `line`, `kind`, `severity`, `message`. An agent fixes the first record
+instead of reading the log. `bin/gai check --json` and `bin/gai lint --json`
+print the same record, and `bin/gai mcp` attaches it to `gai_check`.
+
+## Which gate to run
+
+`bin/gai next` maps a change to the cheapest gate that still proves it: `none`,
+`script`, `check`, or `rebuild-check`. It reads paths or `git status --porcelain`
+and takes the highest gate among them. Without it, an agent guesses between one
+script, the game check, and a rebuild.
 
 ## Format and lint
 

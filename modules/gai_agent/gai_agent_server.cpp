@@ -30,6 +30,8 @@
 
 #include "gai_agent_server.h"
 
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/io/ip_address.h"
 #include "core/io/json.h"
 #include "core/object/callable_mp.h"
@@ -44,7 +46,117 @@
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
 
+#include <signal.h>
+
 #include <cstring>
+
+#if defined(UNIX_ENABLED) && !defined(WEB_ENABLED)
+#define GAI_CRASH_RECORD_ENABLED
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+namespace {
+
+// A fatal signal the engine cannot recover from still tells the agent what it
+// was doing. The prefix is formatted before the call, so the handler only
+// writes bytes, with no allocation and no lock.
+struct GaiCrashRecord {
+	char path[4096] = { 0 };
+	char prefix[1024] = { 0 };
+	int prefix_length = 0;
+	volatile sig_atomic_t armed = 0;
+	bool installed = false;
+};
+
+GaiCrashRecord gai_crash;
+
+#ifdef GAI_CRASH_RECORD_ENABLED
+
+void gai_crash_text(char *p_buffer, int &r_length, int p_capacity, const char *p_text) {
+	while (*p_text != '\0' && r_length < p_capacity - 1) {
+		p_buffer[r_length++] = *p_text++;
+	}
+}
+
+void gai_crash_number(char *p_buffer, int &r_length, int p_capacity, uint64_t p_value) {
+	char digits[20];
+	int count = 0;
+	do {
+		digits[count++] = (char)('0' + (int)(p_value % 10));
+		p_value /= 10;
+	} while (p_value > 0 && count < 20);
+	while (count > 0 && r_length < p_capacity - 1) {
+		p_buffer[r_length++] = digits[--count];
+	}
+}
+
+void gai_crash_json_string(char *p_buffer, int &r_length, int p_capacity, const String &p_text) {
+	gai_crash_text(p_buffer, r_length, p_capacity, "\"");
+	const CharString utf8 = p_text.utf8();
+	for (int index = 0; index < utf8.length() && r_length < p_capacity - 3; index++) {
+		const char character = utf8[index];
+		if (character == '"' || character == '\\') {
+			p_buffer[r_length++] = '\\';
+			p_buffer[r_length++] = character;
+		} else if ((unsigned char)character >= 0x20) {
+			p_buffer[r_length++] = character;
+		}
+	}
+	gai_crash_text(p_buffer, r_length, p_capacity, "\"");
+}
+
+const char *gai_crash_signal_name(int p_signal) {
+	switch (p_signal) {
+#ifdef SIGSEGV
+		case SIGSEGV:
+			return "SIGSEGV";
+#endif
+#ifdef SIGBUS
+		case SIGBUS:
+			return "SIGBUS";
+#endif
+#ifdef SIGFPE
+		case SIGFPE:
+			return "SIGFPE";
+#endif
+#ifdef SIGILL
+		case SIGILL:
+			return "SIGILL";
+#endif
+		default:
+			return "signal";
+	}
+}
+
+void gai_crash_handler(int p_signal) {
+	if (gai_crash.armed && gai_crash.path[0] != '\0') {
+		const int fd = open(gai_crash.path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if (fd >= 0) {
+			char buffer[1200];
+			int length = 0;
+			const int capacity = (int)sizeof(buffer);
+			const int prefix_length = MIN(gai_crash.prefix_length, capacity - 96);
+			memcpy(buffer, gai_crash.prefix, prefix_length);
+			length = prefix_length;
+			gai_crash_text(buffer, length, capacity, ",\"signal\":\"");
+			gai_crash_text(buffer, length, capacity, gai_crash_signal_name(p_signal));
+			gai_crash_text(buffer, length, capacity, "\",\"signal_num\":");
+			gai_crash_number(buffer, length, capacity, (uint64_t)p_signal);
+			gai_crash_text(buffer, length, capacity, "}\n");
+			const ssize_t written = write(fd, buffer, (size_t)length);
+			(void)written;
+			close(fd);
+		}
+	}
+	// Hand the signal back so Godot's own handler and the core dump still run.
+	signal(p_signal, SIG_DFL);
+	raise(p_signal);
+}
+
+#endif // GAI_CRASH_RECORD_ENABLED
+
+} //namespace
 
 class GaiAgentEventCallable : public CallableCustom {
 	GaiAgentServer *server = nullptr;
@@ -104,6 +216,8 @@ GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("classdb.classes", callable_mp(this, &GaiAgentServer::_rpc_classdb_classes));
 	rpc.set_method("classdb.class", callable_mp(this, &GaiAgentServer::_rpc_classdb_class));
 	rpc.set_method("classdb.instantiate", callable_mp(this, &GaiAgentServer::_rpc_classdb_instantiate));
+	rpc.set_method("script.classes", callable_mp(this, &GaiAgentServer::_rpc_script_classes));
+	rpc.set_method("script.class", callable_mp(this, &GaiAgentServer::_rpc_script_class));
 	rpc.set_method("object.get", callable_mp(this, &GaiAgentServer::_rpc_object_get));
 	rpc.set_method("object.set", callable_mp(this, &GaiAgentServer::_rpc_object_set));
 	rpc.set_method("object.call", callable_mp(this, &GaiAgentServer::_rpc_object_call));
@@ -177,6 +291,7 @@ void GaiAgentServer::start() {
 	}
 	tree->connect("process_frame", callable_mp(this, &GaiAgentServer::poll));
 	print_line("GAI_AGENT_LISTENING " + itos(port));
+	_install_crash_record();
 }
 
 void GaiAgentServer::stop() {
@@ -207,6 +322,7 @@ void GaiAgentServer::stop() {
 	}
 	created.clear();
 	refs.clear();
+	_remove_crash_record();
 }
 
 namespace {
@@ -539,8 +655,90 @@ void GaiAgentServer::_handle_line(const String &p_line) {
 	_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Invalid request")) + "\n");
 }
 
+void GaiAgentServer::_install_crash_record() {
+#ifdef GAI_CRASH_RECORD_ENABLED
+	if (gai_crash.installed) {
+		return;
+	}
+	String path = OS::get_singleton()->get_environment("GAI_CRASH_RECORD");
+	if (path.is_empty()) {
+		path = OS::get_singleton()->get_data_path().path_join("gai").path_join("bridge-crash.json");
+	}
+	DirAccess::make_dir_recursive_absolute(path.get_base_dir());
+	const CharString utf8 = path.utf8();
+	if (utf8.length() == 0 || utf8.length() >= (int)sizeof(gai_crash.path)) {
+		return;
+	}
+	memcpy(gai_crash.path, utf8.get_data(), utf8.length());
+	gai_crash.path[utf8.length()] = '\0';
+
+	struct sigaction action = {};
+	action.sa_handler = gai_crash_handler;
+	action.sa_flags = SA_RESETHAND;
+	sigemptyset(&action.sa_mask);
+	const int signals[] = { SIGSEGV, SIGFPE, SIGILL, SIGABRT };
+	for (int index = 0; index < 4; index++) {
+		sigaction(signals[index], &action, nullptr);
+	}
+	gai_crash.installed = true;
+#endif
+}
+
+void GaiAgentServer::_remove_crash_record() {
+#ifdef GAI_CRASH_RECORD_ENABLED
+	if (!gai_crash.installed || gai_crash.path[0] == '\0') {
+		return;
+	}
+	// A clean shutdown must not leave a record that frames a later crash.
+	DirAccess::remove_absolute(String::utf8(gai_crash.path));
+#endif
+}
+
+void GaiAgentServer::_arm_crash_record(const String &p_method, const String &p_target) {
+#ifdef GAI_CRASH_RECORD_ENABLED
+	if (!gai_crash.installed) {
+		return;
+	}
+	int length = 0;
+	const int capacity = (int)sizeof(gai_crash.prefix);
+	gai_crash_text(gai_crash.prefix, length, capacity, "{\"schema\":1,\"pid\":");
+	gai_crash_number(gai_crash.prefix, length, capacity, (uint64_t)OS::get_singleton()->get_process_id());
+	gai_crash_text(gai_crash.prefix, length, capacity, ",\"method\":");
+	gai_crash_json_string(gai_crash.prefix, length, capacity, p_method);
+	gai_crash_text(gai_crash.prefix, length, capacity, ",\"target\":");
+	gai_crash_json_string(gai_crash.prefix, length, capacity, p_target);
+	gai_crash_text(gai_crash.prefix, length, capacity, ",\"started_ms\":");
+	gai_crash_number(gai_crash.prefix, length, capacity, (uint64_t)OS::get_singleton()->get_ticks_msec());
+	gai_crash.prefix_length = length;
+	gai_crash.armed = 1;
+#endif
+}
+
+void GaiAgentServer::_disarm_crash_record() {
+#ifdef GAI_CRASH_RECORD_ENABLED
+	gai_crash.armed = 0;
+#endif
+}
+
 Variant GaiAgentServer::_process_request(const Dictionary &p_request, const Variant &p_id) {
+	const String method = p_request.get("method", String());
+	String target;
+	const Variant params = p_request.get("params", Variant());
+	if (params.get_type() == Variant::DICTIONARY) {
+		const Dictionary dict = params;
+		if (dict.has("handle")) {
+			target = "handle=" + dict["handle"].stringify();
+		}
+		if (dict.has("path")) {
+			target = "path=" + String(dict["path"]);
+		}
+		if (dict.has("method")) {
+			target += " call=" + String(dict["method"]);
+		}
+	}
+	_arm_crash_record(method, target);
 	const Variant response = rpc.process_action(p_request);
+	_disarm_crash_record();
 	if (response.get_type() == Variant::DICTIONARY) {
 		const Dictionary response_dict = response;
 		if (response_dict.has("result") && response_dict["result"].get_type() == Variant::DICTIONARY) {
