@@ -3499,6 +3499,9 @@ def cmd_version(args) -> int:
 GDTOOLKIT_VERSION = "4.5.0"
 FMT_TIMEOUT = 600.0
 FMT_INSTALL_TIMEOUT = 900.0
+LINT_TIMEOUT = 600.0
+SCRIPT_AT_LINE = re.compile(r"^at: .*\((?P<path>res://[^()]*):(?P<line>\d+)\)$")
+ERROR_PREFIX = re.compile(r"^(?:ERROR|SCRIPT ERROR|SHADER ERROR):\s*")
 
 
 def as_text(output) -> str:
@@ -3739,6 +3742,83 @@ def cmd_fmt_install(args) -> int:
     return 0
 
 
+def lint_problems(text: str) -> list[tuple[str, int, str]]:
+    """Pull `path:line: message` out of the engine's script checker output.
+
+    Measured on 4.7.2, each problem is two lines, and only the second one names
+    the file:
+
+        SCRIPT ERROR: Parse Error: <message>
+                  at: GDScript::reload (res://scripts/x.gd:3)
+
+    A problem with no `at:` line of this shape is dropped: it belongs to the
+    engine, not to a script. `collect_errors` is the noise filter, so the
+    shutdown messages that `check` also ignores stay out.
+    """
+    noise = set(collect_errors(text))
+    problems: list[tuple[str, int, str]] = []
+    pending = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("at:"):
+            location = SCRIPT_AT_LINE.match(line)
+            if location and pending:
+                path = location.group("path")[len("res://") :]
+                problems.append((path, int(location.group("line")), pending))
+            pending = ""
+            continue
+        if ERROR_LINE.match(line) and line in noise:
+            pending = ERROR_PREFIX.sub("", line)
+    return problems
+
+
+def cmd_lint(args) -> int:
+    require_game()
+    scripts = game_scripts(args.paths)
+    override = project_override("lint_command")
+    if override:
+        return run_project_command("lint", [override, *scripts], "lint", LINT_TIMEOUT, shell=True)
+    engine = require_engine()
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "lint.log"
+    if not ensure_game_import(engine, LINT_TIMEOUT, quiet=True):
+        print(f"lint: the first import did not finish. Log: {show_path(log_path)}", file=sys.stderr)
+        return 1
+    scene = write_script_checker()
+    argv = [engine, "--headless", "--path", GAME_DIR, scene]
+    if args.paths:
+        argv.append("--")
+        argv.extend(f"--script=res://{path}" for path in scripts)
+    result = None
+    try:
+        result = run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=LINT_TIMEOUT,
+        )
+        text = result.stdout or ""
+    except subprocess.TimeoutExpired as exc:
+        text = as_text(exc.output) + f"lint: the engine timed out after {LINT_TIMEOUT}s\n"
+    finally:
+        remove_script_checker()
+    log_path.write_text(text, encoding="utf-8")
+    problems = lint_problems(text)
+    for path, line, message in problems:
+        print(f"{path}:{line}: {message}")
+    print(f"lint: {len(scripts)} scripts, {len(problems)} problems")
+    if problems:
+        print(f"full log: {show_path(log_path)}")
+        return 1
+    if result is None or result.returncode != 0:
+        code = "no exit" if result is None else f"code {result.returncode}"
+        print(f"lint: the engine exited with {code}", file=sys.stderr)
+        print(f"full log: {show_path(log_path)}")
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gai",
@@ -3841,6 +3921,10 @@ def build_parser() -> argparse.ArgumentParser:
     fmt.add_argument("paths", nargs="*", help="scripts or folders to format (default: every .gd)")
     fmt.add_argument("--check", action="store_true", help="exit 1 when a file needs formatting")
     fmt.set_defaults(func=cmd_fmt)
+
+    lint = sub.add_parser("lint", help="run the engine's script analyzer over the game")
+    lint.add_argument("paths", nargs="*", help="scripts or folders to lint (default: every .gd)")
+    lint.set_defaults(func=cmd_lint)
 
     test_cmd = sub.add_parser("test", help="run game tests headlessly")
     test_cmd.add_argument(

@@ -247,7 +247,7 @@ class FmtTest(unittest.TestCase):
 
     def test_log_is_written_and_test_xml_is_left_alone(self):
         self.fake_gdformat()
-        self.logs.mkdir(parents=True)
+        self.logs.mkdir(parents=True, exist_ok=True)
         marker = self.logs / "test.xml"
         marker.write_text("<testsuite/>\n", encoding="utf-8")
         result = self.run_gai("fmt", "--check")

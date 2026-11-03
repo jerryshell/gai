@@ -49,6 +49,8 @@ jobs:
         run: python3 tests/test_check.py
       - name: Test the fmt command
         run: python3 tests/test_fmt.py
+      - name: Test the lint command
+        run: python3 tests/test_lint.py
 
   engine:
     runs-on: ubuntu-24.04
