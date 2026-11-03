@@ -13,6 +13,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -1015,6 +1016,42 @@ def test_failure_lines(summary, limit: int = 12):
         if len(lines) >= limit:
             break
     return lines
+
+
+def project_setting(section: str, key: str) -> str:
+    """Read one plain string from a section of the game's `project.godot`.
+
+    `[gai]` holds one key per project hook, and a hook value is one shell
+    command line. Return "" when the file, the section, or the key is missing.
+    """
+    project = GAME_DIR / "project.godot"
+    try:
+        lines = project.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    current = ""
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current = stripped[1:-1]
+            continue
+        if current != section or "=" not in stripped:
+            continue
+        if stripped.startswith(";") or stripped.startswith("#"):
+            continue
+        name, value = stripped.split("=", 1)
+        if name.strip() != key:
+            continue
+        text = value.strip()
+        if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+            text = text[1:-1]
+        return text
+    return ""
+
+
+def project_override(key: str) -> str:
+    """The project's replacement command for one gai command, or ""."""
+    return project_setting("gai", key)
 
 
 def project_autoloads() -> list[str]:
@@ -3459,6 +3496,249 @@ def cmd_version(args) -> int:
     return 0
 
 
+GDTOOLKIT_VERSION = "4.5.0"
+FMT_TIMEOUT = 600.0
+FMT_INSTALL_TIMEOUT = 900.0
+
+
+def as_text(output) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output
+
+
+def quote_arg(text: str) -> str:
+    """Quote one argument for the platform shell the project command runs in."""
+    if os.name == "nt":
+        return subprocess.list2cmdline([text])
+    return shlex.quote(text)
+
+
+def run_project_command(name: str, argv: list[str], log_name: str, timeout: float, shell: bool = False) -> int:
+    """Run one command with the game as the working directory, and log what it said.
+
+    With `shell`, the first element is one command line and the rest are its
+    arguments: gai quotes each argument and appends them, so a `[gai]` hook keeps
+    its own words while gai adds the selected paths.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"{log_name}.log"
+    command = [" ".join([argv[0], *[quote_arg(part) for part in argv[1:]]])] if shell else argv
+    try:
+        result = run(
+            command,
+            cwd=GAME_DIR,
+            shell=shell,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
+        text = result.stdout or ""
+        code = result.returncode
+    except subprocess.TimeoutExpired as exc:
+        text = as_text(exc.output) + f"{name}: timed out after {timeout}s\n"
+        code = 1
+    except OSError as exc:
+        text = f"{name}: {exc}\n"
+        code = 1
+    log_path.write_text(text, encoding="utf-8")
+    if text:
+        print(text, end="" if text.endswith("\n") else "\n")
+    return code
+
+
+def game_scripts(paths: list[str]) -> list[str]:
+    """Every `.gd` file under the game, relative and posix, dot parts skipped.
+
+    With `paths`, keep only the named scripts or the scripts below the named
+    folders. A name that is not a script the formatter can reach is a usage
+    error, not a silent skip.
+    """
+    found: list[str] = []
+    for path in sorted(GAME_DIR.rglob("*.gd")):
+        relative = path.relative_to(GAME_DIR)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        found.append(relative.as_posix())
+    if not paths:
+        return found
+    selected: list[str] = []
+    for wanted in paths:
+        relative = Path(wanted)
+        if relative.is_absolute():
+            try:
+                relative = relative.resolve().relative_to(GAME_DIR)
+            except ValueError:
+                die(f"`{wanted}` is not inside `{show_path(GAME_DIR)}`", 2)
+        name = relative.as_posix()
+        while name.startswith("./"):
+            name = name[2:]
+        target = GAME_DIR / name
+        if target.is_dir():
+            prefix = name.rstrip("/") + "/"
+            below = [script for script in found if script.startswith(prefix)]
+            if not below:
+                die(f"`{wanted}` holds no script", 2)
+            selected.extend(below)
+            continue
+        if not target.is_file():
+            die(f"`{wanted}` is not in `{show_path(GAME_DIR)}`", 2)
+        if name not in found:
+            die(f"`{wanted}` is not a `.gd` file outside a dot directory", 2)
+        selected.append(name)
+    return list(dict.fromkeys(selected))
+
+
+def tools_gdformat(target: Path) -> Path:
+    if os.name == "nt":
+        return target / "Scripts" / "gdformat.exe"
+    return target / "bin" / "gdformat"
+
+
+def tools_venv_dir() -> Path:
+    return RUNTIME_DIR / "tools" / f"gdtoolkit-{GDTOOLKIT_VERSION}"
+
+
+def tools_venv_python(target: Path) -> Path:
+    if os.name == "nt":
+        return target / "Scripts" / "python.exe"
+    return target / "bin" / "python"
+
+
+def formatter_version(binary: str) -> str:
+    """The version a gdformat reports, or "" when it cannot be asked."""
+    try:
+        result = run(
+            [binary, "--version"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    match = re.search(r"\d+\.\d+\.\d+", result.stdout or "")
+    return match.group(0) if match else ""
+
+
+def formatter_binary() -> str:
+    """The gdformat to run: the override, the pinned install, or a matching PATH copy."""
+    override = os.environ.get("GAI_GDFORMAT", "")
+    if override:
+        return override
+    pinned = tools_gdformat(tools_venv_dir())
+    if pinned.is_file() and os.access(pinned, os.X_OK):
+        return str(pinned)
+    located = shutil.which("gdformat")
+    if located and formatter_version(located) == GDTOOLKIT_VERSION:
+        return located
+    return ""
+
+
+def missing_formatter() -> str:
+    return (
+        f"no gdformat {GDTOOLKIT_VERSION} found. Run `bin/gai fmt install`, "
+        f"or set `GAI_GDFORMAT` to a gdformat {GDTOOLKIT_VERSION} binary."
+    )
+
+
+def cmd_fmt(args) -> int:
+    if args.paths[:1] == ["install"] and not (GAME_DIR / "install").exists():
+        return cmd_fmt_install(args)
+    require_game()
+    scripts = game_scripts(args.paths)
+    write_command = project_override("format_command")
+    check_command = project_override("format_check_command")
+    if args.check:
+        if check_command:
+            return run_project_command("fmt", [check_command, *scripts], "fmt", FMT_TIMEOUT, shell=True)
+        if write_command:
+            die(
+                "`[gai]` in project.godot sets `format_command` but no `format_check_command`, "
+                "so `gai fmt --check` has nothing to run. Add the key, or remove `format_command`.",
+                2,
+            )
+        if not scripts:
+            print("fmt: no scripts to format")
+            return 0
+        binary = formatter_binary()
+        if not binary:
+            die(missing_formatter())
+        return run_project_command("fmt", [binary, "--check", *scripts], "fmt", FMT_TIMEOUT)
+    if write_command:
+        return run_project_command("fmt", [write_command, *scripts], "fmt", FMT_TIMEOUT, shell=True)
+    if not scripts:
+        print("fmt: no scripts to format")
+        return 0
+    binary = formatter_binary()
+    if not binary:
+        die(missing_formatter())
+    return run_project_command("fmt", [binary, *scripts], "fmt", FMT_TIMEOUT)
+
+
+def cmd_fmt_install(args) -> int:
+    for extra in args.paths[1:]:
+        if extra == "--check":
+            args.check = True
+            continue
+        die(f"`gai fmt install` does not take `{extra}`", 2)
+    target = tools_venv_dir()
+    binary = tools_gdformat(target)
+    if args.check:
+        if not binary.is_file():
+            print(f"fmt install: gdformat {GDTOOLKIT_VERSION} is not installed at {show_path(target)}")
+            return 1
+        version = formatter_version(str(binary))
+        if version != GDTOOLKIT_VERSION:
+            print(f"fmt install: {show_path(binary)} reports {version or 'no version'}, want {GDTOOLKIT_VERSION}")
+            return 1
+        print(f"fmt install: gdformat {version} at {show_path(binary)}")
+        return 0
+    if binary.is_file() and formatter_version(str(binary)) == GDTOOLKIT_VERSION:
+        print(f"fmt install: gdformat {GDTOOLKIT_VERSION} is already at {show_path(binary)}")
+        return 0
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / "fmt-install.log"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    steps = [
+        [sys.executable, "-m", "venv", str(target)],
+        [str(tools_venv_python(target)), "-m", "pip", "install", f"gdtoolkit=={GDTOOLKIT_VERSION}"],
+    ]
+    output: list[str] = []
+    for argv in steps:
+        print(f"fmt install: {' '.join(argv)}", flush=True)
+        try:
+            result = run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=FMT_INSTALL_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            output.append(f"{exc}\n")
+            log_path.write_text("".join(output), encoding="utf-8")
+            die(f"fmt install: {exc}")
+        output.append(result.stdout or "")
+        if result.returncode != 0:
+            log_path.write_text("".join(output), encoding="utf-8")
+            print("".join(output), end="")
+            die(f"fmt install: the step above failed. Full log: {show_path(log_path)}")
+    log_path.write_text("".join(output), encoding="utf-8")
+    version = formatter_version(str(binary))
+    if version != GDTOOLKIT_VERSION:
+        print(f"fmt install: {show_path(binary)} reports {version or 'no version'}, want {GDTOOLKIT_VERSION}")
+        print(f"full log: {show_path(log_path)}")
+        return 1
+    print(f"fmt install: gdformat {version} at {show_path(binary)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gai",
@@ -3553,6 +3833,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check.add_argument("--no-run", action="store_true", help="do not run the main scene")
     check.set_defaults(func=cmd_check)
+
+    fmt = sub.add_parser("fmt", help="format the game's GDScript with gdformat")
+    # `fmt install` is a word, not a nested subparser: argparse reserves one
+    # positional token for a subcommand, so a nested `install` would make every
+    # `gai fmt <path>` fail before cmd_fmt runs. The word is dispatched below.
+    fmt.add_argument("paths", nargs="*", help="scripts or folders to format (default: every .gd)")
+    fmt.add_argument("--check", action="store_true", help="exit 1 when a file needs formatting")
+    fmt.set_defaults(func=cmd_fmt)
 
     test_cmd = sub.add_parser("test", help="run game tests headlessly")
     test_cmd.add_argument(
