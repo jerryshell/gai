@@ -561,19 +561,19 @@ class AgentTest(unittest.TestCase):
     def state(self):
         return json.loads((self.tmp / ".gai" / "agent.json").read_text(encoding="utf-8"))
 
-    def request(self, method: str, params=None):
+    def request(self, method: str, params=None, token=None):
         state = self.state()
         payload = json.dumps({
             "jsonrpc": "2.0",
             "id": 1,
             "method": method,
             "params": params or {},
-            "token": state["token"],
+            "token": token or state["token"],
         })
         return self.raw(payload + "\n")
 
-    def rpc(self, method: str, params=None):
-        response = self.request(method, params)
+    def rpc(self, method: str, params=None, token=None):
+        response = self.request(method, params, token)
         if "error" in response:
             raise AssertionError(response["error"])
         return response["result"]
@@ -638,7 +638,7 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(quit_denied["error"]["code"], -32003)
 
         status = self.run_gai("agent", "status")
-        self.assertIn("as read-only", status.stdout)
+        self.assertIn("ceiling read-only", status.stdout)
 
         lines = (self.tmp / ".gai" / "logs" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
         records = [json.loads(line) for line in lines]
@@ -647,6 +647,53 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(records[0]["access"], "write")
         self.assertFalse(records[0]["allowed"])
         self.assertEqual(records[1]["access"], "admin")
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_each_token_carries_its_own_role(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        state = self.state()
+        self.assertEqual(sorted(state["tokens"]), ["admin", "read-only", "write"])
+        self.assertEqual(state["token"], state["tokens"]["admin"])
+        self.assertNotEqual(state["tokens"]["admin"], state["tokens"]["read-only"])
+
+        read_ping = self.rpc("ping", token=state["tokens"]["read-only"])
+        self.assertEqual(read_ping["caller"], "read-only")
+        self.assertEqual(read_ping["access"], "read")
+        self.assertEqual(read_ping["role"], "admin")
+
+        read_write = self.request(
+            "node.set",
+            {"path": "/root/Main", "property": "visible", "value": False},
+            token=state["tokens"]["read-only"],
+        )
+        self.assertEqual(read_write["error"]["code"], -32003)
+        self.assertIn("read-only", read_write["error"]["message"])
+
+        write_admin = self.request("run.quit", token=state["tokens"]["write"])
+        self.assertEqual(write_admin["error"]["code"], -32003)
+        self.assertIn("admin", write_admin["error"]["message"])
+
+        write_write = self.rpc(
+            "node.set", {"path": "/root/Main", "property": "visible", "value": False}, token=state["tokens"]["write"]
+        )
+        self.assertFalse(write_write["value"])
+
+        unknown = self.request("ping", token="not-a-token")
+        self.assertEqual(unknown["error"]["code"], -32001)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_the_audit_line_names_a_passthrough_call(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        handle = self.rpc("object.singleton", {"name": "OS"})["handle"]
+        self.assertIsInstance(self.rpc("object.call", {"handle": handle, "method": "get_process_id"}), int)
+        lines = (self.tmp / ".gai" / "logs" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+        records = [json.loads(line) for line in lines]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["method"], "object.call")
+        self.assertEqual(records[0]["effect"], "OS.get_process_id")
+        self.assertTrue(records[0]["allowed"])
 
     @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
     def test_admin_write_is_audited_and_a_read_is_not(self):

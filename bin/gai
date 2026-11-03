@@ -840,7 +840,13 @@ def engine_tree_stamp() -> dict:
             continue
         if entry in ("AGENTS.md", "README.md", "CHANGELOG.md", "NOTICE.md"):
             continue
-        lines.append(line.strip())
+        # A status letter says a file is dirty, not what it holds. Two edits to
+        # the same dirty file look identical without the content.
+        try:
+            content = hashlib.sha1((ROOT / entry).read_bytes()).hexdigest()
+        except OSError:
+            content = "missing"
+        lines.append(line.strip() + ":" + content)
     digest = hashlib.sha1("\n".join(sorted(lines)).encode("utf-8")).hexdigest()
     return {"head": head_text, "dirty": digest, "changes": len(lines)}
 
@@ -2586,6 +2592,12 @@ def agent_state():
         die(f"`{show_path(AGENT_STATE)}` is not valid JSON")
 
 
+def agent_token(state: dict, role: str = "admin") -> str:
+    """The token that carries a role, falling back to the single session token."""
+    tokens = state.get("tokens") or {}
+    return tokens.get(role) or state.get("token", "")
+
+
 def agent_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -2596,13 +2608,13 @@ def agent_pid_alive(pid: int) -> bool:
     return True
 
 
-def agent_call(state: dict, method: str, params=None, timeout: float = 5.0):
+def agent_call(state: dict, method: str, params=None, timeout: float = 5.0, role: str = "admin"):
     request = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": method,
         "params": params or {},
-        "token": state["token"],
+        "token": agent_token(state, role),
     }
     try:
         with socket.create_connection(("127.0.0.1", int(state["port"])), timeout=timeout) as sock:
@@ -2660,14 +2672,14 @@ def dead_agent_message() -> str:
     return message
 
 
-def agent_result(method: str, params=None):
+def agent_result(method: str, params=None, role: str = "admin"):
     state = agent_state()
     if state is None:
         die("no agent is running. Run `bin/gai agent start` first.")
     if not agent_pid_alive(int(state.get("pid", 0))):
         die(dead_agent_message())
     try:
-        result = agent_call(state, method, params)
+        result = agent_call(state, method, params, role=role)
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"agent: {exc}")
     return result
@@ -2785,11 +2797,17 @@ def _cmd_agent_start(args) -> int:
     finally:
         probe.close()
 
-    token = secrets.token_hex(24)
+    tokens = {
+        "admin": secrets.token_hex(24),
+        "write": secrets.token_hex(24),
+        "read-only": secrets.token_hex(24),
+    }
+    token = tokens["admin"]
     state = {
         "pid": 0,
         "port": port,
         "token": token,
+        "tokens": tokens,
         "engine": str(engine),
         "log": str(AGENT_LOG),
         "role": getattr(args, "role", "admin"),
@@ -2797,6 +2815,9 @@ def _cmd_agent_start(args) -> int:
     env = os.environ.copy()
     env["GAI_AGENT_PORT"] = str(port)
     env["GAI_AGENT_TOKEN"] = token
+    env["GAI_AGENT_TOKEN_ADMIN"] = tokens["admin"]
+    env["GAI_AGENT_TOKEN_WRITE"] = tokens["write"]
+    env["GAI_AGENT_TOKEN_READ_ONLY"] = tokens["read-only"]
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     CRASH_RECORD.unlink(missing_ok=True)
     env["GAI_CRASH_RECORD"] = str(CRASH_RECORD)
@@ -2899,7 +2920,9 @@ def cmd_agent_status(args) -> int:
         print(f"agent: process alive but not responding ({exc})")
         return 1
     role = result.get("role") or state.get("role") or "unknown"
-    print(f"agent: running on 127.0.0.1:{state['port']} ({result.get('engine', 'unknown')}) as {role}")
+    roles = ", ".join(result.get("roles") or [role])
+    print(f"agent: running on 127.0.0.1:{state['port']} ({result.get('engine', 'unknown')})")
+    print(f"agent: ceiling {role}; tokens for {roles}")
     return 0
 
 
@@ -2934,7 +2957,7 @@ def cmd_agent_call(args) -> int:
         params = json.loads(args.params)
     except json.JSONDecodeError as exc:
         die(f"params must be JSON: {exc}")
-    print(json.dumps(agent_result(args.method, params), indent=2, ensure_ascii=False))
+    print(json.dumps(agent_result(args.method, params, role=args.role), indent=2, ensure_ascii=False))
     return 0
 
 
@@ -2960,12 +2983,13 @@ def cmd_agent_watch(args) -> int:
         die(f"agent: {exc}")
     sock.settimeout(None)
     stream = sock.makefile("r", encoding="utf-8", newline="\n")
+    role = getattr(args, "role", "admin")
     request = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "event.subscribe",
         "params": params,
-        "token": state["token"],
+        "token": agent_token(state, role),
     }
     try:
         sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
@@ -3014,7 +3038,7 @@ def cmd_agent_watch(args) -> int:
                 "id": 2,
                 "method": "event.unsubscribe",
                 "params": {"subscription": subscription},
-                "token": state["token"],
+                "token": agent_token(state, role),
             }
             sock.sendall((json.dumps(unsubscribe) + "\n").encode("utf-8"))
         except OSError:
@@ -3071,7 +3095,7 @@ def cmd_mcp(args) -> int:
 
     try:
         connection = gai_mcp.BridgeConnection(
-            state["port"], state["token"], timeout=args.timeout
+            state["port"], agent_token(state, args.role), timeout=args.timeout
         )
     except (OSError, ValueError) as exc:
         print(f"gai-mcp: cannot connect to the bridge: {exc}", file=sys.stderr)
@@ -4736,6 +4760,12 @@ def build_parser() -> argparse.ArgumentParser:
     agent_call = agent_sub.add_parser("call", help="call any bridge method with JSON params")
     agent_call.add_argument("method")
     agent_call.add_argument("params", nargs="?", default="{}", help="JSON object (default: {})")
+    agent_call.add_argument(
+        "--role",
+        choices=("admin", "write", "read-only"),
+        default="admin",
+        help="send the token for this role (default: admin)",
+    )
     agent_call.set_defaults(func=cmd_agent_call)
     agent_methods = agent_sub.add_parser("methods", help="list bridge methods")
     agent_methods.set_defaults(func=cmd_agent_methods)
@@ -4748,6 +4778,12 @@ def build_parser() -> argparse.ArgumentParser:
     agent_watch_target.add_argument("--handle", help="object handle from scene.tree or object.singleton")
     agent_watch.add_argument("--signal", required=True, help="signal name")
     agent_watch.add_argument("--count", type=int, default=0, help="stop after N events (default: run until Ctrl-C)")
+    agent_watch.add_argument(
+        "--role",
+        choices=("admin", "write", "read-only"),
+        default="read-only",
+        help="send the token for this role (default: read-only)",
+    )
     agent_watch.set_defaults(func=cmd_agent_watch)
 
     mcp = sub.add_parser("mcp", help="serve the agent bridge over MCP stdio")
