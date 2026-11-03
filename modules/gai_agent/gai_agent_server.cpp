@@ -58,6 +58,8 @@
 
 namespace {
 
+#ifdef GAI_CRASH_RECORD_ENABLED
+
 // A fatal signal the engine cannot recover from still tells the agent what it
 // was doing. The prefix is formatted before the call, so the handler only
 // writes bytes, with no allocation and no lock.
@@ -70,8 +72,6 @@ struct GaiCrashRecord {
 };
 
 GaiCrashRecord gai_crash;
-
-#ifdef GAI_CRASH_RECORD_ENABLED
 
 void gai_crash_text(char *p_buffer, int &r_length, int p_capacity, const char *p_text) {
 	while (*p_text != '\0' && r_length < p_capacity - 1) {
