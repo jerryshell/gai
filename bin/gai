@@ -3558,16 +3558,16 @@ def run_project_command(name: str, argv: list[str], log_name: str, timeout: floa
 def game_scripts(paths: list[str]) -> list[str]:
     """Every `.gd` file under the game, relative and posix, dot parts skipped.
 
+    The default walk leaves `addons/` alone: a vendored addon is not the
+    project's code to reformat. A named path is always honoured, so a project
+    that does own its addons can still pass the folder.
+
     With `paths`, keep only the named scripts or the scripts below the named
     folders. A name that is not a script the formatter can reach is a usage
     error, not a silent skip.
     """
-    found: list[str] = []
-    for path in sorted(GAME_DIR.rglob("*.gd")):
-        relative = path.relative_to(GAME_DIR)
-        if any(part.startswith(".") for part in relative.parts):
-            continue
-        found.append(relative.as_posix())
+    walked = _relative_scripts()
+    found = [script for script in walked if not script.startswith("addons/")]
     if not paths:
         return found
     selected: list[str] = []
@@ -3584,17 +3584,28 @@ def game_scripts(paths: list[str]) -> list[str]:
         target = GAME_DIR / name
         if target.is_dir():
             prefix = name.rstrip("/") + "/"
-            below = [script for script in found if script.startswith(prefix)]
+            below = [script for script in walked if script.startswith(prefix)]
             if not below:
                 die(f"`{wanted}` holds no script", 2)
             selected.extend(below)
             continue
         if not target.is_file():
             die(f"`{wanted}` is not in `{show_path(GAME_DIR)}`", 2)
-        if name not in found:
+        if name not in walked:
             die(f"`{wanted}` is not a `.gd` file outside a dot directory", 2)
         selected.append(name)
     return list(dict.fromkeys(selected))
+
+
+def _relative_scripts() -> list[str]:
+    """Every `.gd` under the game with a dot-free path, relative and posix."""
+    found: list[str] = []
+    for path in sorted(GAME_DIR.rglob("*.gd")):
+        relative = path.relative_to(GAME_DIR)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        found.append(relative.as_posix())
+    return found
 
 
 def tools_gdformat(target: Path) -> Path:

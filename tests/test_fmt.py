@@ -157,6 +157,26 @@ class FmtTest(unittest.TestCase):
         self.assertIn("tests/run_tests.gd", args)
         self.assertNotIn("scripts/main.gd", args)
 
+    def test_vendored_addons_are_left_alone(self):
+        self.fake_gdformat()
+        addon = self.game / "addons" / "vendor" / "vendor.gd"
+        addon.parent.mkdir(parents=True)
+        addon.write_text("extends Node\n", encoding="utf-8")
+        result = self.run_gai("fmt")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = self.recorded_args()
+        self.assertIn("scripts/main.gd", args)
+        self.assertFalse([item for item in args if item.startswith("addons/")])
+
+    def test_a_named_addon_folder_is_still_formatted(self):
+        self.fake_gdformat()
+        addon = self.game / "addons" / "vendor" / "vendor.gd"
+        addon.parent.mkdir(parents=True)
+        addon.write_text("extends Node\n", encoding="utf-8")
+        result = self.run_gai("fmt", "addons/vendor")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.recorded_args(), ["addons/vendor/vendor.gd"])
+
     def test_unknown_path_is_a_usage_error(self):
         self.fake_gdformat()
         result = self.run_gai("fmt", "scripts/ghost.gd")
