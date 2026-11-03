@@ -56,13 +56,18 @@ class BuildTest(unittest.TestCase):
         return self.tmp / "bin" / "godot.linuxbsd.editor.x86_64"
 
     def scons_env(self):
-        """A PATH whose first entry is a fake scons that logs its arguments."""
-        bindir = self.tmp / "sconsbin"
-        bindir.mkdir(exist_ok=True)
+        """A PATH whose first entry is a fake scons that logs its arguments.
+
+        The fake lives outside the temporary repository: a build stamp reads
+        `git status`, and a tool that appears as an untracked file turns a
+        docs-only commit into a reason to rebuild.
+        """
+        bindir = Path(tempfile.mkdtemp(prefix="gai-scons-"))
+        self.addCleanup(shutil.rmtree, bindir, ignore_errors=True)
         script = bindir / "scons"
         script.write_text('#!/bin/sh\necho "$@" >> "$SCONS_LOG"\nexit 0\n', encoding="utf-8")
         script.chmod(0o755)
-        log = self.tmp / "scons.log"
+        log = bindir / "scons.log"
         env = dict(os.environ)
         env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
         env["SCONS_LOG"] = str(log)
@@ -187,6 +192,36 @@ class BuildTest(unittest.TestCase):
             result.stdout,
         )
         self.assertNotIn("CC=", result.stdout)
+
+    def test_a_docs_only_commit_does_not_ask_for_a_rebuild(self):
+        git = ["git", "-C", str(self.tmp), "-c", "user.name=gai", "-c", "user.email=gai@example.com"]
+        subprocess.run(git + ["init", "-q"], check=True, capture_output=True, text=True)
+        (self.tmp / "docs").mkdir()
+        (self.tmp / "docs" / "note.md").write_text("one\n", encoding="utf-8")
+        source = self.tmp / "core" / "fake.cpp"
+        source.parent.mkdir(parents=True)
+        source.write_text("// one\n", encoding="utf-8")
+        self.engine().write_text("", encoding="utf-8")
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True, text=True)
+        subprocess.run(git + ["commit", "-qm", "init"], check=True, capture_output=True, text=True)
+
+        env, _log = self.scons_env()
+        built = self.run_gai("build", "--jobs", "1", env=env)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+
+        (self.tmp / "docs" / "note.md").write_text("two\n", encoding="utf-8")
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True, text=True)
+        subprocess.run(git + ["commit", "-qm", "docs"], check=True, capture_output=True, text=True)
+        after = self.run_gai("build", "--check")
+        self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
+        self.assertIn("up to date", after.stdout)
+
+        source.write_text("// two\n", encoding="utf-8")
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True, text=True)
+        subprocess.run(git + ["commit", "-qm", "engine"], check=True, capture_output=True, text=True)
+        engine_commit = self.run_gai("build", "--check")
+        self.assertEqual(engine_commit.returncode, 1, engine_commit.stdout + engine_commit.stderr)
+        self.assertIn("stale", engine_commit.stdout)
 
     def test_objects_compiles_only_the_named_object(self):
         env, log = self.scons_env()

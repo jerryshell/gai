@@ -25,9 +25,10 @@ bin/gai build
 
 `--check` exits 0 when the binary is current and 1 when a rebuild is needed. It
 answers from content, not mtimes: a successful build writes
-`.gai/build/<target>-<host>.json` with `HEAD` and a digest of the engine changes,
-and `--check` compares that digest. A checkout, a merge, or a formatter pass that
-rewrites the same bytes no longer reads as a reason to rebuild.
+`.gai/build/<target>-<host>.json` with a tree hash of each engine directory and a
+content hash of every dirty engine file, and `--check` compares both. A checkout,
+a formatter pass that rewrites the same bytes, or a merge of branches that touched
+no engine file no longer reads as a reason to rebuild.
 
 `--force` rebuilds even when it is current. `--dry-run` prints the SCons command.
 `--jobs N` overrides the memory-aware default. The command keeps the platform
