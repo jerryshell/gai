@@ -820,12 +820,35 @@ def newest_engine_source():
     return newest
 
 
-def engine_tree_stamp() -> dict:
-    """Identity of the engine source tree: HEAD plus every change outside docs and game.
+STAMP_PATHS = (
+    "SConstruct",
+    "core",
+    "drivers",
+    "editor",
+    "main",
+    "methods.py",
+    "modules",
+    "platform",
+    "platform_methods.py",
+    "scene",
+    "servers",
+    "thirdparty",
+    "version.py",
+)
 
-    mtimes are not identity. A checkout, a merge, or a formatter pass rewrites the
-    same bytes and used to look like a reason to rebuild for twenty minutes.
+
+def engine_tree_stamp() -> dict:
+    """Identity of the engine source tree: the committed trees plus every dirty file.
+
+    mtimes are not identity, and neither is `HEAD`: a merge of docs-only branches
+    moves `HEAD` without touching a byte the compiler reads. A tree hash per
+    engine directory is the content, and a hash per dirty file covers the work in
+    progress.
     """
+    trees = []
+    for name in STAMP_PATHS:
+        resolved = git("rev-parse", f"HEAD:{name}", check=False)
+        trees.append(f"{name}={resolved.stdout.strip()}" if resolved.returncode == 0 else f"{name}=missing")
     head = git("rev-parse", "HEAD", check=False)
     dirty = git("status", "--porcelain", check=False)
     head_text = head.stdout.strip() if head.returncode == 0 else ""
@@ -848,7 +871,8 @@ def engine_tree_stamp() -> dict:
             content = "missing"
         lines.append(line.strip() + ":" + content)
     digest = hashlib.sha1("\n".join(sorted(lines)).encode("utf-8")).hexdigest()
-    return {"head": head_text, "dirty": digest, "changes": len(lines)}
+    tree_digest = hashlib.sha1("\n".join(trees).encode("utf-8")).hexdigest()
+    return {"head": head_text, "tree": tree_digest, "dirty": digest, "changes": len(lines)}
 
 
 def build_stamp_path(target: str, platform_name=None) -> Path:
@@ -876,7 +900,7 @@ def stamp_is_current(target: str, platform_name=None) -> bool:
     if stamp is None:
         return False
     current = engine_tree_stamp()
-    return stamp.get("head") == current["head"] and stamp.get("dirty") == current["dirty"]
+    return stamp.get("tree") == current["tree"] and stamp.get("dirty") == current["dirty"]
 
 
 def build_is_stale(engine, target: str = "editor", platform_name=None):
