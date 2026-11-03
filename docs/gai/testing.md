@@ -20,6 +20,11 @@ runs. It does not prove that the game behaves correctly. `bin/gai test` runs
 | `bin/gai check` | Run the game checks and the tests. |
 | `bin/gai check --no-tests` | Skip the tests. |
 
+Every `check` and `lint` run writes `.gai/logs/diagnostics.json` with `ok`,
+`count`, `first`, and one entry per problem carrying `path`, `line`, `kind`,
+`severity`, and `message`. `--json` prints it. Read `first` instead of the whole
+log.
+
 `check` runs the tests only when `game/tests/run_tests.gd` exists. Delete the
 runner to opt a project out, or pass `--no-tests`. `check` always reads
 `res://tests`; `--dir` changes the directory for `bin/gai test` only.

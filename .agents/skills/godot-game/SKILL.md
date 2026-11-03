@@ -14,6 +14,30 @@ root. Read it before you change files.
 2. Read `game/project.godot` to learn the main scene, window size, and input actions.
 3. List `game/` before you add files.
 
+## Pick the smallest gate
+
+`bin/gai next` prints the cheapest command that still proves your change:
+
+```sh
+bin/gai next game/scripts/player.gd   # gate script: compile that one file
+bin/gai next game/scenes/main.tscn    # gate check: import, main scene, tests
+bin/gai next core/object/object.cpp   # gate rebuild-check: build, then check
+bin/gai next                          # the same, from git status
+```
+
+Run what it prints instead of guessing. `check --script res://scripts/x.gd
+--no-run` answers a one-file edit in about seven seconds. `bin/gai check` is the
+gate for a scene, an asset, `project.godot`, or a test. An engine change needs
+`bin/gai build` first.
+
+## Explore scripts without reading them
+
+`bin/gai agent call script.classes '{}'` lists every `class_name` in the
+project. `bin/gai agent call script.class '{"name":"Player"}'` returns its base
+type, exported properties, methods with arguments, signals, constants, and doc.
+Use it before you read a script, and to find the method you need to connect or
+override.
+
 ## Change a scene
 
 Scenes are text files. Read the scene before you edit it.
@@ -98,9 +122,14 @@ For a one-off event, use `_unhandled_input(event: InputEvent)` and
 ## Find and fix errors
 
 1. Run `bin/gai check`.
-2. Open `.gai/logs/check.log`.
-3. Fix the first `SCRIPT ERROR` or `ERROR` line. Later errors are often a result of the first one.
+2. Read `.gai/logs/diagnostics.json`. It has `ok`, `count`, and `first`, and
+   each error carries `path`, `line`, `kind`, and `message`. `bin/gai check
+   --json` prints the same record.
+3. Fix `first`. Later errors are often a result of the first one.
 4. Run `bin/gai check` again.
+
+If the agent bridge dies mid-call, `.gai/logs/bridge-crash.json` names the method,
+the target, and the signal. `bin/gai agent status` prints it.
 
 See `references/errors.md` for common messages.
 

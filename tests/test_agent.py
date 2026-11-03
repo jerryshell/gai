@@ -606,6 +606,16 @@ class AgentTest(unittest.TestCase):
         by_path = self.rpc("script.class", {"path": "res://scripts/probe.gd"})
         self.assertTrue(by_path["cached"])
 
+        (self.tmp / "game" / "scripts" / "probe.gd").write_text(
+            PROBE_SCRIPT.replace("speed: float = 12.0", "speed: float = 99.0"), encoding="utf-8"
+        )
+        refreshed = self.rpc("script.classes", {"refresh": True})
+        self.assertEqual(refreshed["cached"], 0)
+        self.assertIn("Probe", [item["class"] for item in refreshed["classes"]])
+        reloaded = self.rpc("script.class", {"path": "res://scripts/probe.gd"})
+        self.assertFalse(reloaded["cached"])
+        self.assertIn("99.0", json.dumps(reloaded["doc"]))
+
         missing = self.request("script.class", {"name": "Missing"})
         self.assertEqual(missing["error"]["code"], -32602)
         self.assertIn("unknown script class", missing["error"]["message"])

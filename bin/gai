@@ -2485,12 +2485,21 @@ def describe_crash(record: dict) -> str:
     )
 
 
+def dead_agent_message() -> str:
+    """Say why the game is gone, when the bridge left a crash record."""
+    message = "the agent process is not running. Run `bin/gai agent start` again."
+    record = read_crash_record()
+    if record is not None:
+        message += f"\n{describe_crash(record)}"
+    return message
+
+
 def agent_result(method: str, params=None):
     state = agent_state()
     if state is None:
         die("no agent is running. Run `bin/gai agent start` first.")
     if not agent_pid_alive(int(state.get("pid", 0))):
-        die("the agent process is not running. Run `bin/gai agent start` again.")
+        die(dead_agent_message())
     try:
         result = agent_call(state, method, params)
     except (OSError, RuntimeError, ValueError) as exc:

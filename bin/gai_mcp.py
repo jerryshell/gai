@@ -189,6 +189,17 @@ def _result_error(message: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
+def _json_document(text: str) -> Any:
+    """Parse one JSON document that starts at the first brace and runs to the end."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        return json.loads(text[start:])
+    except json.JSONDecodeError:
+        return None
+
+
 def _last_json(text: str) -> Any:
     for line in reversed(text.splitlines()):
         line = line.strip()
@@ -334,6 +345,21 @@ class Server:
                     "This can take longer than a bridge call."
                 ),
                 "inputSchema": _schema({}),
+            },
+            {
+                "name": "gai_next",
+                "description": (
+                    "Return the cheapest gate that covers these changes: none, script, "
+                    "check, or rebuild-check, with the command to run. Without paths it "
+                    "reads git status."
+                ),
+                "inputSchema": _schema({
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Changed paths; defaults to git status.",
+                    }
+                }),
             },
             {
                 "name": "gai_subscribe",
@@ -489,6 +515,8 @@ class Server:
             return self.run_test(arguments)
         if name == "gai_check":
             return self.run_check(arguments)
+        if name == "gai_next":
+            return self.run_next(arguments)
         if name == "gai_subscribe":
             return self.subscribe_tool(arguments)
         if name == "gai_unsubscribe":
@@ -622,6 +650,23 @@ class Server:
         if diagnostics is not None:
             payload["diagnostics"] = diagnostics
         return ToolFailure(payload) if int(result.get("returncode") or 0) != 0 else payload
+
+    def run_next(self, arguments: dict[str, Any]) -> Any:
+        if self.runner is None:
+            raise ToolError("the next runner is not configured")
+        command = ["next", "--json"]
+        paths = arguments.get("paths", [])
+        if paths:
+            if not isinstance(paths, list) or not all(isinstance(item, str) for item in paths):
+                raise ToolError("paths must be an array of strings")
+            command.extend(paths)
+        result = self.runner(command, self.command_timeout)
+        stdout = str(result.get("stdout", ""))
+        payload = _json_document(stdout)
+        if not isinstance(payload, dict):
+            detail = str(result.get("error") or result.get("stderr") or stdout[-2000:])
+            raise ToolError(f"the next command did not return JSON: {detail}")
+        return payload
 
     def read_diagnostics(self) -> Any:
         """Attach the record `check` writes, so a client gets paths and lines."""

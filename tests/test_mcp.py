@@ -127,6 +127,35 @@ class McpTest(unittest.TestCase):
             {"name": name, "arguments": arguments},
         )
 
+    def test_gai_next_returns_the_gate(self):
+        runner = FakeRunner(
+            check_output=json.dumps(
+                {
+                    "gate": "script",
+                    "command": "bin/gai check --script res://scripts/player.gd --no-run",
+                    "paths": ["game/scripts/player.gd"],
+                    "reasons": [{"path": "game/scripts/player.gd", "gate": "script", "rule": "game/**/*.gd"}],
+                },
+                indent=2,
+            )
+        )
+        responses, _ = self.run_mcp(
+            [self.call_tool("gai_next", {"paths": ["game/scripts/player.gd"]})],
+            runner,
+        )
+        result = responses[0]["result"]
+        self.assertFalse(result["isError"])
+        payload = json.loads(result["content"][0]["text"])
+        self.assertEqual(payload["gate"], "script")
+        self.assertEqual(payload["reasons"][0]["rule"], "game/**/*.gd")
+        self.assertEqual(runner.commands[0][0], ["next", "--json", "game/scripts/player.gd"])
+
+    def test_gai_next_rejects_a_non_string_path(self):
+        responses, _ = self.run_mcp([self.call_tool("gai_next", {"paths": [1]})])
+        result = responses[0]["result"]
+        self.assertTrue(result.get("isError"))
+        self.assertIn("array of strings", result["content"][0]["text"])
+
     def test_a_dead_bridge_reports_the_crash_record(self):
         logs = self.runtime / "logs"
         logs.mkdir(parents=True, exist_ok=True)
@@ -195,6 +224,7 @@ class McpTest(unittest.TestCase):
         self.assertIn("gai_screenshot", names)
         self.assertIn("gai_test", names)
         self.assertIn("gai_check", names)
+        self.assertIn("gai_next", names)
         self.assertIn("gai_subscribe", names)
         self.assertIn("gai_unsubscribe", names)
 
