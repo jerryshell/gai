@@ -658,6 +658,8 @@ Dictionary GaiAgentServer::_script_entry_dict(const ScriptEntry &p_entry, bool p
 	}
 	info["constants"] = constant_map;
 
+#ifdef TOOLS_ENABLED
+	// A template build has no doc generation, so the virtual is editor-only.
 	const Vector<DocData::ClassDoc> docs = script->get_documentation();
 	for (const DocData::ClassDoc &doc : docs) {
 		if (!global_name.is_empty() && doc.name != String(global_name)) {
@@ -666,6 +668,7 @@ Dictionary GaiAgentServer::_script_entry_dict(const ScriptEntry &p_entry, bool p
 		info["doc"] = DocData::ClassDoc::to_dict(doc);
 		break;
 	}
+#endif
 	return info;
 }
 

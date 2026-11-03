@@ -72,6 +72,20 @@ scons platform=windows target=editor dev_build=no
 A clean editor build takes tens of minutes on a many-core machine and hours on a
 small one. Keep several GB of free disk for each target.
 
+## Editor and template builds differ
+
+`target=template_release` compiles without `TOOLS_ENABLED`. An editor-only API
+such as `Script::get_documentation` does not exist there, and a change that only
+an editor build compiles will break the export template and the Windows matrix.
+Check one object file instead of the whole target:
+
+```sh
+scons platform=linuxbsd target=template_release dev_build=no linker=lld accesskit=no -j2 \
+    bin/obj/modules/<module>/<file>.linuxbsd.template_release.x86_64.o
+```
+
+That compiles one translation unit in about five seconds.
+
 ## Compile cache
 
 A compiler cache makes a rebuild much faster: an unchanged object comes from the
