@@ -48,8 +48,9 @@ releases.
 - A crash record names the call a fatal signal interrupted, so a dead engine
   reads as `object.call (handle=… call=…) with SIGSEGV` instead of a closed
   socket.
-- Bridge roles: `--role read-only|write|admin` over one access table, with
-  `.gai/logs/audit.jsonl` recording every mutating call and its outcome.
+- Bridge roles: one token per role, an optional process ceiling, one access
+  table, and `.gai/logs/audit.jsonl` recording every mutating call with the role,
+  the outcome, and the effect of a passthrough `object.call`.
 - `bin/gai build` answers `--check` from content, not mtimes, and `--objects`
   compiles one source for a target so a template-only break shows up locally.
 
@@ -97,10 +98,10 @@ the base without a release to justify them.
 Pi Pocket is shared. The bridge has roles and an audit log now; it still trusts
 every client that holds the token, and one role covers the whole process.
 
-- A role per connection, not per process, so one bridge serves a reviewer and a
-  writer.
-- `OS.execute` and file writes through `object.call` need a name of their own in
-  the audit line, not the generic `object.call`.
+- A per-connection *ceiling* that a client can ask to be lower than its token,
+  so one connection can volunteer to be harmless.
+- Presence and scene locks, so two writers on one scene cannot overwrite each
+  other in silence.
 - Presence and scene locks for concurrent agents.
 - Multiuser editor only if humans co-edit a scene. Take Blazium's lock,
   permission, CRDT, and file-sync design, not its 14k-line module blindly.

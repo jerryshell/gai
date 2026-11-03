@@ -113,6 +113,14 @@ class GaiAgentServer : public Object {
 	String token;
 	String role = "admin";
 	GaiAccess role_access = GaiAccess::ADMIN;
+	GaiAccess request_access = GaiAccess::ADMIN;
+	struct RoleToken {
+		String name;
+		String token;
+		GaiAccess access;
+	};
+	Vector<RoleToken> role_tokens;
+	String caller_role = "admin";
 	String audit_path;
 	Ref<FileAccess> audit;
 	int port = 0;
@@ -201,8 +209,10 @@ class GaiAgentServer : public Object {
 	void _send_to(int p_client_id, const String &p_payload);
 	void _queue_event(const String &p_binding_key, const Array &p_args);
 
+	GaiAccess _access_for_token(const String &p_token, bool &r_known, String &r_name) const;
+	String _access_name(GaiAccess p_access) const;
 	GaiAccess _required_access(const String &p_method) const;
-	bool _role_allows(GaiAccess p_required) const;
+	bool _role_allows(GaiAccess p_required, GaiAccess p_access) const;
 	Dictionary _forbidden(const String &p_method, GaiAccess p_required);
 	void _audit(const Dictionary &p_request, const String &p_target, GaiAccess p_access, bool p_allowed);
 

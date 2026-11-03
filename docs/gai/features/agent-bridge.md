@@ -253,9 +253,22 @@ writes one file that names the call it was running:
 
 ## Roles
 
-A bridge starts in one role. `bin/gai agent start --role read-only` passes it
-through `GAI_AGENT_ROLE`, and `bin/gai mcp --start --role` does the same. `ping`
-reports the role, and `bin/gai agent status` prints it.
+A role comes from the token. `bin/gai agent start` mints one token per role and
+writes them to `.gai/agent.json` beside the admin token that older clients read:
+
+```json
+{"token": "<admin>", "tokens": {"admin": "…", "write": "…", "read-only": "…"}}
+```
+
+`bin/gai agent call --role read-only …`, `bin/gai agent watch` (read-only by
+default), and `bin/gai mcp --role read-only` send the token for that role. A
+token that the bridge does not know is `-32001 Unauthorized`, the same answer as
+before, so a role cannot be claimed by asking for it.
+
+`--role` on `agent start` is a ceiling for the whole process: every token is
+capped at it, and a bridge started read-only cannot be raised by any token.
+`ping` reports `role` (the ceiling), `caller` (the role this token carries),
+`access` (the effective access), and `roles` (what the process was given).
 
 | Role | May call |
 | --- | --- |
@@ -266,7 +279,7 @@ reports the role, and `bin/gai agent status` prints it.
 One table in `modules/gai_agent/gai_agent_server.cpp` decides, and a method that
 is not in it needs an admin. A new method is therefore closed until someone
 classifies it. A refused call returns JSON-RPC error `-32003` and names the role
-the method needs.
+the method needs and the role the token carries.
 
 `object.call` is one entry, so a write role can reach any method through it,
 including `OS.execute`. The role bounds the bridge surface, not the engine. A
@@ -279,7 +292,16 @@ Every request whose access is `write` or `admin` appends one line to
 
 ```json
 {"ts":"2026-11-03T16:03:11","pid":2111235,"client":4,"role":"read-only",
- "access":"write","method":"node.set","target":"path=/root/Main","allowed":false}
+ "ceiling":"admin","access":"write","method":"node.set","target":"path=/root/Main",
+ "allowed":false}
+```
+
+A call through `object.call` also carries `effect`, the class and the method the
+client actually reached, so a passthrough is named:
+
+```json
+{"role":"admin","access":"write","method":"object.call",
+ "target":"handle=36028797018963969 call=execute","effect":"OS.execute","allowed":true}
 ```
 
 - `target` is the handle, path, and called method the request named.
@@ -292,9 +314,11 @@ Every request whose access is `write` or `admin` appends one line to
 ## Security
 
 - A random token per session. It is stored in `.gai/agent.json` with mode 600.
-- A role bounds what the token can do. The token stays one per session; start a
-  second bridge with `--role read-only` for a reviewer, or give a reviewer that
-  process and not the admin one.
+- A role bounds what the token can do. The three tokens live in one file with
+  mode 600, so keeping a reviewer to reads means giving them the read-only token
+  and not the file.
+- `--role` on `agent start` caps the whole process, which is the belt to the
+  token's braces.
 - Bind 127.0.0.1 only.
 - Up to 8 clients. Each request must carry the token. A request runs on the main
   thread, so it blocks the other clients while it runs; keep calls short.
@@ -312,10 +336,11 @@ Every request whose access is `write` or `admin` appends one line to
 python3 tests/test_agent.py
 ```
 
-Thirteen tests: scene get/set and auth, capability surface, autoloads, editor mode,
+Fifteen tests: scene get/set and auth, capability surface, autoloads, editor mode,
 concurrent start, foreign PID safety, multi-client event delivery, event replay,
-and batch requests. `test_read_only_role_refuses_a_write` and
-`test_admin_write_is_audited_and_a_read_is_not` cover the role table and the
+and batch requests. `test_read_only_role_refuses_a_write`,
+`test_each_token_carries_its_own_role`, `test_admin_write_is_audited_and_a_read_is_not`,
+and `test_the_audit_line_names_a_passthrough_call` cover the role table and the
 audit log. `test_script_reflection` covers `script.classes` and
 `script.class`. `test_crash_record_names_the_call` sends `SIGSEGV` during a
 blocking call and reads the record back. They need a source build. The `engine`

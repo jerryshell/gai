@@ -77,6 +77,10 @@ returns the crash record in the tool error, with the method and the target.
 or without arguments to read `git status`. Run the command it returns instead of
 guessing between one script, the game check, and a rebuild.
 
+`bin/gai mcp --role read-only` connects with the read-only token, so every tool
+in that session is bounded to reads. `--start` starts the bridge, and `--role`
+then also picks the ceiling.
+
 ## Events
 
 `gai_subscribe` keeps a subscription on the adapter's persistent bridge

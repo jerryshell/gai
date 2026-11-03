@@ -341,7 +341,40 @@ void GaiAgentServer::start() {
 	}
 	token = OS::get_singleton()->get_environment("GAI_AGENT_TOKEN");
 	const String port_string = OS::get_singleton()->get_environment("GAI_AGENT_PORT");
-	if (token.is_empty() || port_string.is_empty()) {
+	if (port_string.is_empty()) {
+		return;
+	}
+	const struct {
+		const char *variable;
+		const char *name;
+		GaiAccess access;
+	} token_variables[] = {
+		{ "GAI_AGENT_TOKEN_ADMIN", "admin", GaiAccess::ADMIN },
+		{ "GAI_AGENT_TOKEN_WRITE", "write", GaiAccess::WRITE },
+		{ "GAI_AGENT_TOKEN_READ_ONLY", "read-only", GaiAccess::READ },
+	};
+	for (const auto &entry : token_variables) {
+		const String value = OS::get_singleton()->get_environment(entry.variable);
+		if (value.is_empty()) {
+			continue;
+		}
+		RoleToken role_token;
+		role_token.name = entry.name;
+		role_token.token = value;
+		role_token.access = entry.access;
+		role_tokens.push_back(role_token);
+		print_line(vformat("GAI_AGENT_TOKEN %s", entry.name));
+	}
+	if (role_tokens.is_empty() && !token.is_empty()) {
+		// A client that predates per-role tokens still works as the admin it was.
+		RoleToken role_token;
+		role_token.name = "admin";
+		role_token.token = token;
+		role_token.access = GaiAccess::ADMIN;
+		role_tokens.push_back(role_token);
+	}
+	if (role_tokens.is_empty()) {
+		print_error("gai_agent: no bridge token; set GAI_AGENT_TOKEN_ADMIN or GAI_AGENT_TOKEN");
 		return;
 	}
 	port = port_string.to_int();
@@ -682,7 +715,10 @@ void GaiAgentServer::_handle_line(const String &p_line) {
 	if (data.get_type() == Variant::DICTIONARY) {
 		const Dictionary request = data;
 		const Variant id = request.get("id", Variant());
-		if (String(request.get("token", "")) != token) {
+		bool known_token = false;
+		String ignored_role;
+		_access_for_token(String(request.get("token", "")), known_token, ignored_role);
+		if (!known_token) {
 			_send(JSON::stringify(rpc.make_response_error(-32001, "Unauthorized", id)) + "\n");
 			return;
 		}
@@ -728,7 +764,10 @@ void GaiAgentServer::_handle_line(const String &p_line) {
 			}
 			const Dictionary request = item;
 			const Variant id = request.get("id", Variant());
-			if (String(request.get("token", "")) != token) {
+			bool known_token = false;
+			String ignored_role;
+			_access_for_token(String(request.get("token", "")), known_token, ignored_role);
+			if (!known_token) {
 				responses.push_back(rpc.make_response_error(-32001, "Unauthorized", id));
 				continue;
 			}
@@ -746,6 +785,26 @@ void GaiAgentServer::_handle_line(const String &p_line) {
 	_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Invalid request")) + "\n");
 }
 
+GaiAccess GaiAgentServer::_access_for_token(const String &p_token, bool &r_known, String &r_name) const {
+	r_known = false;
+	r_name = "";
+	if (p_token.is_empty()) {
+		return GaiAccess::READ;
+	}
+	for (const RoleToken &entry : role_tokens) {
+		if (entry.token == p_token) {
+			r_known = true;
+			r_name = entry.name;
+			return entry.access;
+		}
+	}
+	return GaiAccess::READ;
+}
+
+String GaiAgentServer::_access_name(GaiAccess p_access) const {
+	return gai_access_name(p_access);
+}
+
 GaiAccess GaiAgentServer::_required_access(const String &p_method) const {
 	// One table decides what a role may call. An unlisted method needs an admin,
 	// so a new method is closed until someone classifies it.
@@ -757,8 +816,8 @@ GaiAccess GaiAgentServer::_required_access(const String &p_method) const {
 	return GaiAccess::ADMIN;
 }
 
-bool GaiAgentServer::_role_allows(GaiAccess p_required) const {
-	switch (role_access) {
+bool GaiAgentServer::_role_allows(GaiAccess p_required, GaiAccess p_access) const {
+	switch (p_access) {
 		case GaiAccess::READ:
 			return p_required == GaiAccess::READ;
 		case GaiAccess::WRITE:
@@ -770,7 +829,8 @@ bool GaiAgentServer::_role_allows(GaiAccess p_required) const {
 
 Dictionary GaiAgentServer::_forbidden(const String &p_method, GaiAccess p_required) {
 	Dictionary error;
-	error["$gai_forbidden"] = vformat("%s needs the %s role; this bridge runs as %s", p_method, gai_access_name(p_required), role);
+	error["$gai_forbidden"] = vformat(
+			"%s needs the %s role; this token carries %s", p_method, gai_access_name(p_required), caller_role);
 	return error;
 }
 
@@ -784,11 +844,24 @@ void GaiAgentServer::_audit(const Dictionary &p_request, const String &p_target,
 	line["ts"] = Time::get_singleton()->get_datetime_string_from_system(true);
 	line["pid"] = OS::get_singleton()->get_process_id();
 	line["client"] = current_client != nullptr ? current_client->id : 0;
-	line["role"] = role;
+	line["role"] = caller_role;
+	line["ceiling"] = role;
 	line["access"] = gai_access_name(p_access);
 	line["method"] = String(p_request.get("method", ""));
 	line["target"] = p_target;
 	line["allowed"] = p_allowed;
+	if (String(p_request.get("method", "")) == "object.call") {
+		// A passthrough call hides its effect behind `object.call`, so the line
+		// names the class and the method the client actually reached.
+		const Variant params = p_request.get("params", Variant());
+		if (params.get_type() == Variant::DICTIONARY) {
+			const Dictionary call = params;
+			Object *target = _resolve_handle(call.get("handle", Variant()));
+			if (target != nullptr) {
+				line["effect"] = target->get_class() + "." + String(call.get("method", ""));
+			}
+		}
+	}
 	audit->seek_end();
 	audit->store_line(JSON::stringify(line));
 	audit->flush();
@@ -875,8 +948,18 @@ Variant GaiAgentServer::_process_request(const Dictionary &p_request, const Vari
 			target += " call=" + String(dict["method"]);
 		}
 	}
+	bool known = false;
+	String token_role = "";
+	const GaiAccess token_access = _access_for_token(String(p_request.get("token", "")), known, token_role);
+	if (!known) {
+		return rpc.make_response_error(-32001, "Unauthorized", p_id);
+	}
+	// The token carries a role, and the process ceiling caps it: a bridge started
+	// with --role read-only cannot be raised by any token.
+	request_access = token_access <= role_access ? token_access : role_access;
+	caller_role = token_access <= role_access ? token_role : role;
 	const GaiAccess required = _required_access(method);
-	const bool allowed = _role_allows(required);
+	const bool allowed = _role_allows(required, request_access);
 	_audit(p_request, target, required, allowed);
 	if (!allowed) {
 		return rpc.make_response_error(-32003, String(Dictionary(_forbidden(method, required))["$gai_forbidden"]), p_id);
@@ -1066,6 +1149,13 @@ Variant GaiAgentServer::_rpc_ping(const Variant &p_params) {
 	result["pong"] = true;
 	result["engine"] = String(VERSION_FULL_NAME);
 	result["role"] = role;
+	result["access"] = _access_name(request_access);
+	result["caller"] = caller_role;
+	Array available;
+	for (const RoleToken &entry : role_tokens) {
+		available.push_back(entry.name);
+	}
+	result["roles"] = available;
 	result["pid"] = OS::get_singleton()->get_process_id();
 	result["clients"] = clients.size();
 	if (current_client != nullptr) {

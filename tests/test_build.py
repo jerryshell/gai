@@ -245,6 +245,16 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(edited.returncode, 1, edited.stdout + edited.stderr)
         self.assertIn("stale", edited.stdout)
 
+        # The stamp must catch a second edit to a file that was dirty already:
+        # the status letter is the same, the content is not.
+        env, _log = self.scons_env()
+        built = self.run_gai("build", "--jobs", "1", env=env)
+        self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+        source.write_text("// three\n", encoding="utf-8")
+        again = self.run_gai("build", "--check")
+        self.assertEqual(again.returncode, 1, again.stdout + again.stderr)
+        self.assertIn("stale", again.stdout)
+
     def test_detects_newer_source_and_current_binary(self):
         now = time.time()
         self.engine().write_text("", encoding="utf-8")
