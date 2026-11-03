@@ -55,6 +55,27 @@ class BuildTest(unittest.TestCase):
     def engine(self):
         return self.tmp / "bin" / "godot.linuxbsd.editor.x86_64"
 
+    def scons_env(self):
+        """A PATH whose first entry is a fake scons that logs its arguments."""
+        bindir = self.tmp / "sconsbin"
+        bindir.mkdir(exist_ok=True)
+        script = bindir / "scons"
+        script.write_text('#!/bin/sh\necho "$@" >> "$SCONS_LOG"\nexit 0\n', encoding="utf-8")
+        script.chmod(0o755)
+        log = self.tmp / "scons.log"
+        env = dict(os.environ)
+        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+        env["SCONS_LOG"] = str(log)
+        return env, log
+
+    def object_file(self, source: str, target: str, platform_name="linuxbsd"):
+        relative = Path(source)
+        directory = self.tmp / "bin" / "obj" / relative.parent
+        directory.mkdir(parents=True, exist_ok=True)
+        obj = directory / f"{relative.stem}.{platform_name}.{target}.x86_64.o"
+        obj.write_text("", encoding="utf-8")
+        return obj
+
     def cache_log(self):
         (self.tmp / "cache").mkdir(parents=True, exist_ok=True)
         return self.tmp / "cache" / "launcher.log"
@@ -166,6 +187,63 @@ class BuildTest(unittest.TestCase):
             result.stdout,
         )
         self.assertNotIn("CC=", result.stdout)
+
+    def test_objects_compiles_only_the_named_object(self):
+        env, log = self.scons_env()
+        obj = self.object_file("modules/probe/probe.cpp", "template_release")
+        result = self.run_gai(
+            "build",
+            "--target",
+            "template_release",
+            "--objects",
+            "modules/probe/probe.cpp",
+            "--jobs",
+            "1",
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1 object(s) ok", result.stdout)
+        self.assertIn(obj.name, log.read_text(encoding="utf-8"))
+        self.assertIn("target=template_release", log.read_text(encoding="utf-8"))
+
+    def test_objects_skips_a_source_without_an_object(self):
+        env, log = self.scons_env()
+        result = self.run_gai("build", "--target", "template_release", "--objects", "modules/probe/gone.cpp", env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing to compile", result.stdout)
+        self.assertFalse(log.exists())
+
+    def test_objects_ignores_another_platform(self):
+        env, log = self.scons_env()
+        self.object_file("modules/probe/probe.cpp", "template_release", "windows")
+        result = self.run_gai("build", "--target", "template_release", "--objects", "modules/probe/probe.cpp", env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing to compile", result.stdout)
+        self.assertFalse(log.exists())
+
+    def test_an_mtime_bump_is_not_a_rebuild(self):
+        git = ["git", "-C", str(self.tmp), "-c", "user.name=gai", "-c", "user.email=gai@example.com"]
+        subprocess.run(git + ["init", "-q"], check=True, capture_output=True, text=True)
+        source = self.tmp / "core" / "fake.cpp"
+        source.parent.mkdir(parents=True)
+        source.write_text("// one\n", encoding="utf-8")
+        self.engine().write_text("", encoding="utf-8")
+        subprocess.run(git + ["add", "-A"], check=True, capture_output=True, text=True)
+        subprocess.run(git + ["commit", "-qm", "init"], check=True, capture_output=True, text=True)
+
+        first = self.run_gai("build", "--jobs", "1")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertIn("up to date", first.stdout)
+
+        os.utime(source, (time.time() + 60, time.time() + 60))
+        touched = self.run_gai("build", "--check")
+        self.assertEqual(touched.returncode, 0, touched.stdout + touched.stderr)
+        self.assertIn("up to date", touched.stdout)
+
+        source.write_text("// two\n", encoding="utf-8")
+        edited = self.run_gai("build", "--check")
+        self.assertEqual(edited.returncode, 1, edited.stdout + edited.stderr)
+        self.assertIn("stale", edited.stdout)
 
     def test_detects_newer_source_and_current_binary(self):
         now = time.time()

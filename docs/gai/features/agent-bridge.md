@@ -251,9 +251,50 @@ writes one file that names the call it was running:
   engine's own crash path still run. The bridge does not resume the call.
 - Linux and macOS only. On Windows there is no record.
 
+## Roles
+
+A bridge starts in one role. `bin/gai agent start --role read-only` passes it
+through `GAI_AGENT_ROLE`, and `bin/gai mcp --start --role` does the same. `ping`
+reports the role, and `bin/gai agent status` prints it.
+
+| Role | May call |
+| --- | --- |
+| `read-only` | The read methods: `ping`, `api.*`, `classdb.*`, `script.*`, `object.get/properties/methods/signals/singleton/autoload`, `scene.tree/current`, `node.get`, `resource.load`, `project.get`, `run.status`, `event.*`, `client.list`. |
+| `write` | Every read method plus the mutating ones: `object.set/call/free`, `node.set/create/delete/reparent/add_child`, `resource.save`, `project.set/save`, `run.pause/resume/step/time_scale`, `input.*`, `render.screenshot`. |
+| `admin` | Everything, including `scene.change`, `run.quit`, and any method the table does not name. |
+
+One table in `modules/gai_agent/gai_agent_server.cpp` decides, and a method that
+is not in it needs an admin. A new method is therefore closed until someone
+classifies it. A refused call returns JSON-RPC error `-32003` and names the role
+the method needs.
+
+`object.call` is one entry, so a write role can reach any method through it,
+including `OS.execute`. The role bounds the bridge surface, not the engine. A
+read-only bridge is the only role that cannot mutate at all.
+
+## Audit log
+
+Every request whose access is `write` or `admin` appends one line to
+`.gai/logs/audit.jsonl` before it runs, allowed or refused:
+
+```json
+{"ts":"2026-11-03T16:03:11","pid":2111235,"client":4,"role":"read-only",
+ "access":"write","method":"node.set","target":"path=/root/Main","allowed":false}
+```
+
+- `target` is the handle, path, and called method the request named.
+- Reads are not logged, so the file holds only the calls that change something
+  or try to.
+- The path comes from `GAI_AUDIT_LOG`; without it the bridge uses the engine
+  user data directory.
+- The line is written and flushed per request, so a crash keeps the trail.
+
 ## Security
 
 - A random token per session. It is stored in `.gai/agent.json` with mode 600.
+- A role bounds what the token can do. The token stays one per session; start a
+  second bridge with `--role read-only` for a reviewer, or give a reviewer that
+  process and not the admin one.
 - Bind 127.0.0.1 only.
 - Up to 8 clients. Each request must carry the token. A request runs on the main
   thread, so it blocks the other clients while it runs; keep calls short.
@@ -271,9 +312,11 @@ writes one file that names the call it was running:
 python3 tests/test_agent.py
 ```
 
-Eleven tests: scene get/set and auth, capability surface, autoloads, editor mode,
+Thirteen tests: scene get/set and auth, capability surface, autoloads, editor mode,
 concurrent start, foreign PID safety, multi-client event delivery, event replay,
-and batch requests. `test_script_reflection` covers `script.classes` and
+and batch requests. `test_read_only_role_refuses_a_write` and
+`test_admin_write_is_audited_and_a_read_is_not` cover the role table and the
+audit log. `test_script_reflection` covers `script.classes` and
 `script.class`. `test_crash_record_names_the_call` sends `SIGSEGV` during a
 blocking call and reads the record back. They need a source build. The `engine`
 CI job builds the engine and runs them. A local run needs a binary built from

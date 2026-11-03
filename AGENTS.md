@@ -41,7 +41,7 @@ Run these from the repository root.
 | Command | What it does |
 | --- | --- |
 | `bin/gai bootstrap` | Builds the gai engine when it is missing or stale, then checks the game. Use this on the first run. |
-| `bin/gai build` | Builds the gai engine. It uses `sccache` or `ccache` when one is on PATH; `--no-cache` turns that off. `--target template_release` builds an export template; `--platform` and `--mingw` cross-compile; `--clean-import` resets the game import cache. |
+| `bin/gai build` | Builds the gai engine. It uses `sccache` or `ccache` when one is on PATH; `--no-cache` turns that off. `--target template_release` builds an export template; `--platform` and `--mingw` cross-compile; `--clean-import` resets the game import cache. `--objects <paths>` compiles only those sources for a target, which is how a change checks the non-editor build in seconds. |
 | `bin/gai doctor` | Checks the engine, the game, features, and the upstream base. |
 | `bin/gai check` | Imports assets, compiles every `.gd` file, runs the main scene and `game/tests`, and fails on errors or on a `.uid`/`.import` whose target is gone. `--script res://x.gd --no-run` compiles one script in about seven seconds. |
 | `bin/gai next` | Prints the cheapest gate that covers the changes: `none`, `script`, `check`, or `rebuild-check`. It takes paths, or reads `git status --porcelain`. `--json` prints `gate`, `command`, `paths`, and `reasons`; `--run` runs the commands and returns their exit code. |
@@ -50,7 +50,7 @@ Run these from the repository root.
 | `bin/gai test` | Runs `game/tests` headlessly. `--scene-dir res://tests` runs existing `.tscn` test scenes. `check` runs the harness by default. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
-| `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. |
+| `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. `--role read-only` refuses every mutating call and writes `.gai/logs/audit.jsonl`. |
 | `bin/gai agent watch` | Streams signal events from the bridge; pass `--path` or `--handle` and `--signal`. |
 | `bin/gai mcp` | Serves the running bridge over MCP stdio. Add `--start` to start the game. |
 | `bin/gai export web` | Exports a web build. Needs a `Web` preset and export templates. |

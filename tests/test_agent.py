@@ -620,6 +620,51 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(missing["error"]["code"], -32602)
         self.assertIn("unknown script class", missing["error"]["message"])
 
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_read_only_role_refuses_a_write(self):
+        start = self.run_gai("agent", "start", "--role", "read-only")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        self.assertEqual(self.rpc("ping")["role"], "read-only")
+
+        tree = self.rpc("scene.tree")
+        self.assertIn("root", tree)
+
+        denied = self.request("node.set", {"path": "/root/Main", "property": "visible", "value": False})
+        self.assertEqual(denied["error"]["code"], -32003)
+        self.assertIn("read-only", denied["error"]["message"])
+        self.assertIn("node.set", denied["error"]["message"])
+
+        quit_denied = self.request("run.quit")
+        self.assertEqual(quit_denied["error"]["code"], -32003)
+
+        status = self.run_gai("agent", "status")
+        self.assertIn("as read-only", status.stdout)
+
+        lines = (self.tmp / ".gai" / "logs" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+        records = [json.loads(line) for line in lines]
+        self.assertEqual([record["method"] for record in records], ["node.set", "run.quit"])
+        self.assertEqual(records[0]["role"], "read-only")
+        self.assertEqual(records[0]["access"], "write")
+        self.assertFalse(records[0]["allowed"])
+        self.assertEqual(records[1]["access"], "admin")
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_admin_write_is_audited_and_a_read_is_not(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        self.assertEqual(self.rpc("ping")["role"], "admin")
+        self.rpc("scene.tree")
+        self.rpc("node.get", {"path": "/root/Main", "properties": ["visible"]})
+        self.assertFalse(self.rpc("node.set", {"path": "/root/Main", "property": "visible", "value": False})["value"])
+
+        lines = (self.tmp / ".gai" / "logs" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+        records = [json.loads(line) for line in lines]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["method"], "node.set")
+        self.assertEqual(records[0]["role"], "admin")
+        self.assertTrue(records[0]["allowed"])
+        self.assertEqual(records[0]["target"], "path=/root/Main")
+
     @unittest.skipUnless(ENGINE and os.name == "posix", "the crash record needs POSIX signals")
     def test_crash_record_names_the_call(self):
         record_path = self.tmp / ".gai" / "logs" / "bridge-crash.json"

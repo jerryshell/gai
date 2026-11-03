@@ -141,12 +141,26 @@ class NextTest(unittest.TestCase):
             ],
         )
 
+    def test_an_engine_source_adds_a_template_object_step(self):
+        stdout = self.gate("modules/gai_agent/gai_agent_server.cpp")
+        self.assertIn("next: gate rebuild-check", stdout)
+        self.assertIn(
+            "next: bin/gai build --target template_release --objects modules/gai_agent/gai_agent_server.cpp",
+            stdout,
+        )
+        header = self.gate("modules/gai_agent/gai_agent_server.h")
+        self.assertNotIn("--objects", header)
+
     def test_json_for_engine_change(self):
         result = self.run_gai("next", "--json", "core/object/object.cpp")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["gate"], "rebuild-check")
-        self.assertEqual(payload["command"], "bin/gai build && bin/gai check")
+        self.assertEqual(
+            payload["command"],
+            "bin/gai build && bin/gai build --target template_release --objects core/object/object.cpp"
+            " && bin/gai check",
+        )
 
     def test_json_for_docs_change(self):
         result = self.run_gai("next", "--json", "AGENTS.md")

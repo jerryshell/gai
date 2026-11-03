@@ -62,6 +62,7 @@ AGENT_STATE = RUNTIME_DIR / "agent.json"
 AGENT_LOCK = RUNTIME_DIR / "agent.lock"
 AGENT_LOG = RUNTIME_DIR / "agent.log"
 CRASH_RECORD = LOG_DIR / "bridge-crash.json"
+AUDIT_LOG = LOG_DIR / "audit.jsonl"
 DIAGNOSTICS = LOG_DIR / "diagnostics.json"
 
 STEAM_DIR = ROOT / "modules" / "godotsteam"
@@ -819,13 +820,123 @@ def newest_engine_source():
     return newest
 
 
-def build_is_stale(engine):
+def engine_tree_stamp() -> dict:
+    """Identity of the engine source tree: HEAD plus every change outside docs and game.
+
+    mtimes are not identity. A checkout, a merge, or a formatter pass rewrites the
+    same bytes and used to look like a reason to rebuild for twenty minutes.
+    """
+    head = git("rev-parse", "HEAD", check=False)
+    dirty = git("status", "--porcelain", check=False)
+    head_text = head.stdout.strip() if head.returncode == 0 else ""
+    lines = []
+    for line in (dirty.stdout if dirty.returncode == 0 else "").splitlines():
+        entry = line[3:].strip().strip('"')
+        if " -> " in entry:
+            entry = entry.split(" -> ", 1)[1]
+        if not entry or entry.startswith(("game/", "docs/", "tests/")):
+            continue
+        if entry.startswith(".gai/") and not entry.startswith(".gai/features/"):
+            continue
+        if entry in ("AGENTS.md", "README.md", "CHANGELOG.md", "NOTICE.md"):
+            continue
+        lines.append(line.strip())
+    digest = hashlib.sha1("\n".join(sorted(lines)).encode("utf-8")).hexdigest()
+    return {"head": head_text, "dirty": digest, "changes": len(lines)}
+
+
+def build_stamp_path(target: str, platform_name=None) -> Path:
+    host = platform_name or platform.system().lower()
+    return GAI_DIR / "build" / f"{target}-{host}.json".replace(" ", "-")
+
+
+def write_build_stamp(target: str, platform_name=None) -> None:
+    path = build_stamp_path(target, platform_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = engine_tree_stamp()
+    stamp["written"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path.write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
+
+
+def read_build_stamp(target: str, platform_name=None):
+    try:
+        return json.loads(build_stamp_path(target, platform_name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def stamp_is_current(target: str, platform_name=None) -> bool:
+    stamp = read_build_stamp(target, platform_name)
+    if stamp is None:
+        return False
+    current = engine_tree_stamp()
+    return stamp.get("head") == current["head"] and stamp.get("dirty") == current["dirty"]
+
+
+def build_is_stale(engine, target: str = "editor", platform_name=None):
     newest = newest_engine_source()
     if engine is None or not engine.is_file():
         return True, newest
+    stamp = read_build_stamp(target, platform_name)
+    if stamp is not None:
+        return not stamp_is_current(target, platform_name), newest
+    # No stamp yet: fall back to mtimes, which is all an older tree recorded.
     if newest is None:
         return False, None
     return newest[1] > engine.stat().st_mtime, newest
+
+
+COMPILED_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".m", ".mm"}
+OBJECT_SUFFIXES = (".o", ".obj")
+
+
+def platform_flag_for(platform_name=None) -> str:
+    """One place that turns `--platform host` into an SCons platform name."""
+    system = platform.system()
+    if platform_name is None or platform_name == "host":
+        if system == "Linux":
+            return "linuxbsd"
+        if system == "Darwin":
+            return "macos"
+        if system == "Windows":
+            return "windows"
+        die(f"no build recipe for {system}. Read `docs/gai/build.md`.")
+    if platform_name not in ("linuxbsd", "windows", "macos"):
+        die(f"unknown platform: {platform_name}. Use linuxbsd, windows, or macos.")
+    return platform_name
+
+
+def object_targets(sources, target: str, platform_flag: str) -> list:
+    """The object files SCons already knows for these sources, for one target.
+
+    The target and platform live in the object name, so the name is read, not
+    built. A path that was never compiled for this target is skipped instead of
+    guessed.
+    """
+    found = []
+    for source in sources:
+        path = Path(source)
+        if not path.is_absolute():
+            path = ROOT / source
+        if path.suffix not in COMPILED_SOURCE_SUFFIXES:
+            continue
+        try:
+            relative = path.resolve().relative_to(ROOT)
+        except (ValueError, OSError):
+            continue
+        directory = ROOT / "bin" / "obj" / relative.parent
+        if not directory.is_dir():
+            continue
+        for candidate in directory.iterdir():
+            name = candidate.name
+            if not candidate.is_file() or not name.startswith(relative.stem + "."):
+                continue
+            if f".{target}." not in name or f".{platform_flag}." not in name:
+                continue
+            if not name.endswith(OBJECT_SUFFIXES):
+                continue
+            found.append(candidate)
+    return sorted(set(found))
 
 
 def build_engine_command(
@@ -835,20 +946,7 @@ def build_engine_command(
     mingw: bool = False,
     cache=None,
 ):
-    system = platform.system()
-    if platform_name is None or platform_name == "host":
-        if system == "Linux":
-            platform_flag = "linuxbsd"
-        elif system == "Darwin":
-            platform_flag = "macos"
-        elif system == "Windows":
-            platform_flag = "windows"
-        else:
-            die(f"no build recipe for {system}. Read `docs/gai/build.md`.")
-    else:
-        platform_flag = platform_name
-    if platform_flag not in ("linuxbsd", "windows", "macos"):
-        die(f"unknown platform: {platform_flag}. Use linuxbsd, windows, or macos.")
+    platform_flag = platform_flag_for(platform_name)
     command = ["scons", f"platform={platform_flag}", f"target={target}"]
     command.append("dev_build=no")
     if platform_flag == "linuxbsd":
@@ -867,6 +965,30 @@ def build_engine_command(
     return command
 
 
+def cmd_build_objects(args, target: str, platform_name, mingw: bool, sources) -> int:
+    """Compile one object per changed source, without linking and without a stamp."""
+    if shutil.which("scons") is None:
+        die("SCons is not installed. Install SCons and the build dependencies from `docs/gai/build.md`.")
+    wanted = object_targets(sources, target, platform_flag_for(platform_name))
+    if not wanted:
+        print(f"build: no {target} object for these sources yet, so nothing to compile")
+        return 0
+    no_cache = getattr(args, "no_cache", False)
+    cache = no_compiler_cache() if no_cache else detect_compiler_cache()
+    command = build_engine_command(args.jobs, target, platform_name, mingw, cache)
+    command += [str(path.relative_to(ROOT)) for path in wanted]
+    if args.dry_run:
+        print(" ".join(str(part) for part in command))
+        return 0
+    print("build: " + " ".join(str(part) for part in command), flush=True)
+    result = run(command, cwd=ROOT)
+    if result.returncode != 0:
+        print(f"build: {len(wanted)} object(s) failed")
+        return 1
+    print(f"build: {len(wanted)} object(s) ok")
+    return 0
+
+
 def cmd_build(args) -> int:
     if args.jobs is not None and args.jobs < 1:
         print("gai: --jobs must be at least 1", file=sys.stderr)
@@ -877,12 +999,15 @@ def cmd_build(args) -> int:
     if mingw and platform_name != "windows":
         print("gai: --mingw needs --platform windows", file=sys.stderr)
         return 2
+    objects = [str(item) for item in (getattr(args, "objects", None) or [])]
+    if objects:
+        return cmd_build_objects(args, target, platform_name, mingw, objects)
     editor_target = target == "editor"
     if editor_target:
         engine = built_engine()
     else:
         engine = built_template(target, platform_name)
-    stale, newest = build_is_stale(engine)
+    stale, newest = build_is_stale(engine, target, platform_name)
     if args.check:
         if engine is None:
             print(f"build: no {target} binary")
@@ -891,7 +1016,10 @@ def cmd_build(args) -> int:
             source = show_path(newest[0]) if newest else "unknown"
             print(f"build: stale ({source})")
             return 1
-        print("build: up to date")
+        if not stamp_is_current(target, platform_name) and read_build_stamp(target, platform_name) is None:
+            print(f"build: up to date ({show_path(engine)} is newer than every source)")
+        else:
+            print("build: up to date")
         return 0
 
     no_cache = getattr(args, "no_cache", False)
@@ -903,6 +1031,14 @@ def cmd_build(args) -> int:
         print(" ".join(str(part) for part in command))
         return 0
     if not args.force and not stale:
+        # Nothing to compile. Record the tree identity anyway, so the next
+        # `--check` answers from content and not from mtimes.
+        if engine is not None:
+            try:
+                os.utime(engine, None)
+            except OSError:
+                pass
+        write_build_stamp(target, platform_name)
         print("build: up to date")
         return 0
     if shutil.which("scons") is None:
@@ -938,6 +1074,7 @@ def cmd_build(args) -> int:
             os.utime(engine, None)
         except OSError:
             pass
+    write_build_stamp(target, platform_name)
     print(f"build: ok ({time.time() - started:.1f}s)")
     if engine is not None:
         print(f"engine: {engine}")
@@ -964,7 +1101,7 @@ def cmd_bootstrap(args) -> int:
                 die(f"`GAI_GODOT` is not an executable file: {override}")
         else:
             engine = built_engine()
-            stale, newest = build_is_stale(engine)
+            stale, newest = build_is_stale(engine, "editor", None)
             if engine is None or stale or getattr(args, "rebuild", False):
                 result = cmd_build(
                     argparse.Namespace(
@@ -2347,7 +2484,19 @@ def next_commands(gate: str, reasons) -> list:
     if gate == "check":
         return [["check"]]
     if gate == "rebuild-check":
-        return [["build"], ["check"]]
+        commands = [["build"]]
+        sources = [
+            reason["path"]
+            for reason in reasons
+            if reason["gate"] == "rebuild-check"
+            and Path(reason["path"]).suffix in COMPILED_SOURCE_SUFFIXES
+        ]
+        if sources:
+            # The editor target drops nothing but TOOLS_ENABLED. A template
+            # object compile catches an editor-only API before CI does.
+            commands.append(["build", "--target", "template_release", "--objects", *sources])
+        commands.append(["check"])
+        return commands
     scripts = [reason["path"] for reason in reasons if reason["gate"] == "script"]
     return [["check", "--script", res_path(path), "--no-run"] for path in scripts]
 
@@ -2643,6 +2792,7 @@ def _cmd_agent_start(args) -> int:
         "token": token,
         "engine": str(engine),
         "log": str(AGENT_LOG),
+        "role": getattr(args, "role", "admin"),
     }
     env = os.environ.copy()
     env["GAI_AGENT_PORT"] = str(port)
@@ -2650,6 +2800,8 @@ def _cmd_agent_start(args) -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     CRASH_RECORD.unlink(missing_ok=True)
     env["GAI_CRASH_RECORD"] = str(CRASH_RECORD)
+    env["GAI_AGENT_ROLE"] = getattr(args, "role", "admin")
+    env["GAI_AUDIT_LOG"] = str(AUDIT_LOG)
     if args.editor:
         env["GAI_AGENT_EDITOR"] = "1"
     AGENT_LOG.write_text("", encoding="utf-8")
@@ -2746,7 +2898,8 @@ def cmd_agent_status(args) -> int:
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"agent: process alive but not responding ({exc})")
         return 1
-    print(f"agent: running on 127.0.0.1:{state['port']} ({result.get('engine', 'unknown')})")
+    role = result.get("role") or state.get("role") or "unknown"
+    print(f"agent: running on 127.0.0.1:{state['port']} ({result.get('engine', 'unknown')}) as {role}")
     return 0
 
 
@@ -2897,7 +3050,9 @@ def cmd_mcp(args) -> int:
         return 1
     if args.start:
         with contextlib.redirect_stdout(sys.stderr):
-            code = cmd_agent_start(argparse.Namespace(display=args.display, editor=args.editor))
+            code = cmd_agent_start(
+                argparse.Namespace(display=args.display, editor=args.editor, role=getattr(args, "role", "admin"))
+            )
         if code != 0:
             return code
     state = agent_state()
@@ -4348,6 +4503,12 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--dry-run", action="store_true", help="print the build command")
     build.add_argument("--jobs", type=int, default=None, help="SCons jobs (default: memory-aware)")
     build.add_argument(
+        "--objects",
+        nargs="+",
+        metavar="PATH",
+        help="compile only the objects for these sources, with no link and no stamp",
+    )
+    build.add_argument(
         "--target",
         choices=("editor", "template_release", "template_debug"),
         default="editor",
@@ -4550,6 +4711,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="start the editor instead of the game",
     )
+    agent_start.add_argument(
+        "--role",
+        choices=("admin", "write", "read-only"),
+        default="admin",
+        help="what this bridge may do: admin (default), write, or read-only",
+    )
     agent_start.set_defaults(func=cmd_agent_start)
     agent_stop = agent_sub.add_parser("stop", help="stop the bridge and the game")
     agent_stop.set_defaults(func=cmd_agent_stop)
@@ -4598,6 +4765,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--editor",
         action="store_true",
         help="with --start, start the editor instead of the game",
+    )
+    mcp.add_argument(
+        "--role",
+        choices=("admin", "write", "read-only"),
+        default="admin",
+        help="with --start, the bridge role to start (default: admin)",
     )
     mcp.add_argument(
         "--timeout",
