@@ -209,6 +209,11 @@ class BuildTest(unittest.TestCase):
         built = self.run_gai("build", "--jobs", "1", env=env)
         self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
 
+        with (self.tmp / "bin" / "gai").open("a", encoding="utf-8") as tool:
+            tool.write("# a comment the build does not read\n")
+        after_tool = self.run_gai("build", "--check")
+        self.assertEqual(after_tool.returncode, 0, after_tool.stdout + after_tool.stderr)
+
         (self.tmp / "docs" / "note.md").write_text("two\n", encoding="utf-8")
         subprocess.run(git + ["add", "-A"], check=True, capture_output=True, text=True)
         subprocess.run(git + ["commit", "-qm", "docs"], check=True, capture_output=True, text=True)

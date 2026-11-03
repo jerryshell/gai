@@ -26,7 +26,7 @@ bin/gai build
 `--check` exits 0 when the binary is current and 1 when a rebuild is needed. It
 answers from content, not mtimes: a successful build writes
 `.gai/build/<target>-<host>.json` with a tree hash of each engine directory and a
-content hash of every dirty engine file, and `--check` compares both. A checkout,
+content hash of every dirty file the build reads, and `--check` compares both. A checkout,
 a formatter pass that rewrites the same bytes, or a merge of branches that touched
 no engine file no longer reads as a reason to rebuild.
 
