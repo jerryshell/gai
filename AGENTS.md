@@ -41,9 +41,10 @@ Run these from the repository root.
 | Command | What it does |
 | --- | --- |
 | `bin/gai bootstrap` | Builds the gai engine when it is missing or stale, then checks the game. Use this on the first run. |
-| `bin/gai build` | Builds the gai engine. `--target template_release` builds an export template; `--platform` and `--mingw` cross-compile; `--clean-import` resets the game import cache. |
+| `bin/gai build` | Builds the gai engine. It uses `sccache` or `ccache` when one is on PATH; `--no-cache` turns that off. `--target template_release` builds an export template; `--platform` and `--mingw` cross-compile; `--clean-import` resets the game import cache. |
 | `bin/gai doctor` | Checks the engine, the game, features, and the upstream base. |
 | `bin/gai check` | Imports assets, compiles every `.gd` file, runs the main scene and `game/tests`, and fails on errors or on a `.uid`/`.import` whose target is gone. `--script res://x.gd --no-run` compiles one script in about seven seconds. |
+| `bin/gai next` | Prints the cheapest gate that covers the changes: `none`, `script`, `check`, or `rebuild-check`. It takes paths, or reads `git status --porcelain`. `--json` prints `gate`, `command`, `paths`, and `reasons`; `--run` runs the commands and returns their exit code. |
 | `bin/gai import` | Imports assets and accepts the engine's shutdown abort when the cache was written. |
 | `bin/gai shot res://scene.tscn --at 0.4,1.2` | Renders frames to PNG through the offscreen display server, with no display at all. Falls back to a private Xvfb on an engine that predates the driver. |
 | `bin/gai test` | Runs `game/tests` headlessly. `--scene-dir res://tests` runs existing `.tscn` test scenes. `check` runs the harness by default. |
@@ -159,7 +160,7 @@ rejects LLM-written patches upstream; keep changes local.
 3. Add a test in `game/tests/test_*.gd` when the change has behavior a run does
    not show. Extend `res://tests/gai_test_case.gd`.
 4. Run `bin/gai check`. It must exit 0.
-5. If it fails, read `.gai/logs/check.log`, fix the first error, and run it again.
+5. If it fails, read `.gai/logs/diagnostics.json` (or `check: failed` lines) and fix the first error, then run it again. Use `bin/gai next` to pick the cheapest gate first.
 
 Godot exits 0 when a scene hits a script error, so never trust the game process
 exit code by itself. `bin/gai check` scans the output and fails for you.

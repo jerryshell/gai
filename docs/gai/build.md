@@ -72,6 +72,38 @@ scons platform=windows target=editor dev_build=no
 A clean editor build takes tens of minutes on a many-core machine and hours on a
 small one. Keep several GB of free disk for each target.
 
+## Compile cache
+
+A compiler cache makes a rebuild much faster: an unchanged object comes from the
+cache instead of the compiler. `bin/gai build` detects a cache once per build. It
+looks for `sccache` first, then `ccache`, with `shutil.which`. It prints one line:
+
+```text
+build: cache ccache (/home/me/.cache/ccache)
+build: cache none (install ccache or sccache for faster rebuilds)
+```
+
+The launcher does not go into `CC` directly. SCons runs `$CC` as one program, so
+`CC="ccache cc"` fails with `ccache cc: not found`. gai writes two wrappers
+instead, `.gai/tools/cache/ccache-cc` and `ccache-cxx`, and passes their absolute
+paths:
+
+```text
+CC="/repo/.gai/tools/cache/ccache-cc" CXX="/repo/.gai/tools/cache/ccache-cxx"
+```
+
+A wrapper is one line, `exec "/usr/bin/ccache" cc "$@"`. It runs the compiler the
+build already uses: `cc` and `c++` unless `CC` or `CXX` is set. A variable that
+already names a launcher, as in `CC="ccache gcc"`, is left alone rather than
+wrapped twice. The cache folder comes from `SCCACHE_DIR` or `CCACHE_DIR` when
+that variable is set. gai does not install a cache, does not invent a compiler,
+and does not change any other SCons flag or the `--jobs` default.
+
+- `--no-cache` turns the cache off for one build.
+- `--dry-run` prints the cache line and the wrapper paths.
+- `--check` prints no cache line, because it does not build.
+- Windows is not wired, because the wrapper is a `sh` script. The line says so.
+
 ## After switching engines
 
 If you switch between the downloaded engine and a source build, delete
@@ -149,6 +181,34 @@ template needs Emscripten and is not built yet.
 `bin/gai check` tests the game, not the engine. An engine change needs an editor
 build and the feature tests before you commit. CI builds the editor and runs the
 agent and Steam tests in the `engine` job.
+
+## The cheapest sufficient gate
+
+`bin/gai next` prints the cheapest gate that still proves a change. Give it the
+changed paths, or let it read `git status --porcelain`:
+
+```sh
+bin/gai next game/scripts/player.gd      # gate script
+bin/gai next game/scenes/main.tscn       # gate check
+bin/gai next core/object/object.cpp      # gate rebuild-check
+bin/gai next docs/gai/build.md           # gate none
+```
+
+The gate is `none`, `script`, `check`, or `rebuild-check`, in that order of cost.
+It is the highest gate of the paths it was given:
+
+| Change | Gate | Command |
+| --- | --- | --- |
+| `.gai/features/`, engine source in `core/ scene/ servers/ modules/ platform/ editor/ main/ drivers/`, `SConstruct`, `methods.py`, `version.py` | `rebuild-check` | `bin/gai build`, then `bin/gai check` |
+| game scene, asset, autoload, `project.godot` | `check` | `bin/gai check` |
+| a game `*.gd` script | `script` | `bin/gai check --script res://<path> --no-run` |
+| `*.md`, `docs/`, `AGENTS.md`, `tests/*.py`, `.github/` | `none` | nothing |
+| anything else | `check` | `bin/gai check` |
+
+A file under `game/tests/` gives `check`, not `script`. `--json` prints `gate`,
+`command`, `paths`, and one `reasons` entry per path. `--run` runs the commands
+and returns the exit code of the first failure; for the `script` gate it runs
+`check --script` once per script and stops at the first failure.
 
 ## .NET web export
 

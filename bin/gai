@@ -104,6 +104,7 @@ WORKSPACE_FILES = (
     "tests/test_shot.py",
     "tests/test_shot_offscreen.py",
     "tests/test_mcp.py",
+    "tests/test_next.py",
     "tests/test_steam.py",
     "tests/test_upstream.py",
 )
@@ -684,6 +685,92 @@ def build_jobs() -> int:
     return max(1, min(cpus, int(mem_gb / 1.5)))
 
 
+# A compiler cache makes a rebuild much faster: an unchanged object comes from
+# the cache instead of the compiler. gai never invents a compiler. It finds a
+# cache launcher that is already on PATH and runs the compiler through it.
+# Detection runs once per build.
+CACHE_BACKENDS = (
+    # (name, directory variable); sccache first, then ccache.
+    ("sccache", "SCCACHE_DIR"),
+    ("ccache", "CCACHE_DIR"),
+)
+
+
+def detect_compiler_cache():
+    """Describe the compiler cache for this build: {name, launcher, dir, reason, used}."""
+    names = " or ".join(name for name, _ in CACHE_BACKENDS)
+    if os.name == "nt":
+        return {
+            "name": "none",
+            "launcher": None,
+            "dir": None,
+            "reason": "the wrapper that routes a compiler through a cache is POSIX only",
+            "used": False,
+        }
+    for name, variable in CACHE_BACKENDS:
+        launcher = shutil.which(name)
+        if launcher is None:
+            continue
+        return {
+            "name": name,
+            "launcher": launcher,
+            "dir": os.environ.get(variable) or str(Path.home() / ".cache" / name),
+            "reason": f"{name} is on PATH",
+            "used": True,
+        }
+    return {
+        "name": "none",
+        "launcher": None,
+        "dir": None,
+        "reason": f"no {names} on PATH",
+        "used": False,
+    }
+
+
+def no_compiler_cache():
+    return {
+        "name": "none",
+        "launcher": None,
+        "dir": None,
+        "reason": "disabled by --no-cache",
+        "used": False,
+    }
+
+
+def cache_scons_vars(cache) -> list:
+    """Return the SCons CC and CXX assignments that route the compiler through the cache.
+
+    SCons runs `$CC` as one program, so `CC="ccache cc"` fails with `ccache cc:
+    not found`. gai writes one wrapper per language and passes its absolute path,
+    which has no space, so the compiler stays the one the build already uses.
+    """
+    if not cache or not cache.get("used") or os.name == "nt":
+        return []
+    directory = GAI_DIR / "tools" / "cache"
+    directory.mkdir(parents=True, exist_ok=True)
+    assignments = []
+    for language, variable, default in (("cc", "CC", "cc"), ("cxx", "CXX", "c++")):
+        compiler = os.environ.get(variable, "").strip() or default
+        if len(shlex.split(compiler)) != 1:
+            # The variable already names a launcher; wrapping it again nests two caches.
+            continue
+        wrapper = directory / f"{cache['name']}-{language}"
+        wrapper.write_text(
+            f'#!/bin/sh\nexec "{cache["launcher"]}" {compiler} "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        assignments.append(f'{variable}="{wrapper}"')
+    return assignments
+
+
+def print_cache(cache) -> None:
+    if cache.get("used"):
+        print(f"build: cache {cache['name']} ({cache['dir']})", flush=True)
+    else:
+        print("build: cache none (install ccache or sccache for faster rebuilds)", flush=True)
+
+
 ENGINE_SOURCE_SUFFIXES = {
     ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc",
     ".m", ".mm", ".S", ".glsl", ".gdshader", ".cs", ".py",
@@ -733,7 +820,13 @@ def build_is_stale(engine):
     return newest[1] > engine.stat().st_mtime, newest
 
 
-def build_engine_command(jobs=None, target: str = "editor", platform_name=None, mingw: bool = False):
+def build_engine_command(
+    jobs=None,
+    target: str = "editor",
+    platform_name=None,
+    mingw: bool = False,
+    cache=None,
+):
     system = platform.system()
     if platform_name is None or platform_name == "host":
         if system == "Linux":
@@ -761,6 +854,7 @@ def build_engine_command(jobs=None, target: str = "editor", platform_name=None, 
             command += ["accesskit=no"]
     if platform_flag == "macos" and mingw:
         die("--mingw applies to the Windows platform only.")
+    command.extend(cache_scons_vars(cache))
     command.append(f"-j{max(1, int(jobs)) if jobs is not None else build_jobs()}")
     return command
 
@@ -792,8 +886,12 @@ def cmd_build(args) -> int:
         print("build: up to date")
         return 0
 
-    command = build_engine_command(args.jobs, target, platform_name, mingw)
+    no_cache = getattr(args, "no_cache", False)
+    cache = no_compiler_cache() if no_cache else detect_compiler_cache()
+    command = build_engine_command(args.jobs, target, platform_name, mingw, cache)
     if args.dry_run:
+        if not no_cache:
+            print_cache(cache)
         print(" ".join(str(part) for part in command))
         return 0
     if not args.force and not stale:
@@ -810,6 +908,8 @@ def cmd_build(args) -> int:
         print("gai: Steam is not in this build. Run `bin/gai steam sdk --download` for a Steam build.", flush=True)
     if newest is not None:
         print(f"build: newer source {show_path(newest[0])}", flush=True)
+    if not no_cache:
+        print_cache(cache)
     print("build: " + " ".join(str(part) for part in command), flush=True)
     print("build: the first build can take 20 to 70 minutes", flush=True)
     started = time.time()
@@ -868,6 +968,7 @@ def cmd_bootstrap(args) -> int:
                         platform="host",
                         mingw=False,
                         clean_import=False,
+                        no_cache=False,
                     )
                 )
                 if result != 0:
@@ -2060,6 +2161,218 @@ def cmd_check(args) -> int:
         )
         print(f"junit: {show_path(junit_path)}")
     print(f"log: {show_path(log_path)}")
+    return 0
+
+
+# `next` answers one question: after these changes, which gate is still enough?
+#
+# One ordered table maps a glob to a gate, and the first matching glob wins, so a
+# narrow rule sits above a wide one. The order is:
+#
+#    1. `.gai/features/`  a maintained engine feature                      -> rebuild-check
+#    2. docs              docs/, *.md, AGENTS.md                           -> none
+#    3. CI                .github/                                         -> none
+#    4. tool tests        tests/*.py                                       -> none
+#    5. engine source     core/ scene/ servers/ modules/ platform/ editor/
+#                         main/ drivers/                                   -> rebuild-check
+#    6. build files       SConstruct, methods.py, version.py               -> rebuild-check
+#    7. game tests        game/tests/                                      -> check
+#    8. game scripts      any other game/*.gd                              -> script
+#    9. game assets       a scene, an asset, an autoload, project.godot    -> check
+#   10. project file      **/project.godot                                 -> check
+#   11. anything else     the unknown-path fallback                        -> check
+#
+# A Markdown file cannot break a build, so the docs rule sits above the engine
+# rules and a `*.md` change under `core/` or `modules/` needs no gate either.
+# The gate for a change set is the highest gate of its paths:
+# none < script < check < rebuild-check. One engine edit outranks any number of
+# game edits, and a game scene still needs the full check because a script-only
+# run does not load it.
+NEXT_GATES = ("none", "script", "check", "rebuild-check")
+NEXT_RULES = (
+    (".gai/features/**", "rebuild-check"),
+    ("docs/**", "none"),
+    ("**/*.md", "none"),
+    ("AGENTS.md", "none"),
+    (".github/**", "none"),
+    ("tests/*.py", "none"),
+    ("core/**", "rebuild-check"),
+    ("scene/**", "rebuild-check"),
+    ("servers/**", "rebuild-check"),
+    ("modules/**", "rebuild-check"),
+    ("platform/**", "rebuild-check"),
+    ("editor/**", "rebuild-check"),
+    ("main/**", "rebuild-check"),
+    ("drivers/**", "rebuild-check"),
+    ("SConstruct", "rebuild-check"),
+    ("methods.py", "rebuild-check"),
+    ("version.py", "rebuild-check"),
+    ("game/tests/**", "check"),
+    ("game/**/*.gd", "script"),
+    ("game/**", "check"),
+    ("**/project.godot", "check"),
+    ("**", "check"),  # the unknown-path fallback; keep this rule last
+)
+
+
+def glob_regex(pattern: str):
+    """Compile a repository glob: `**` crosses folders, `*` and `?` do not."""
+    parts = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**/", index):
+            parts.append("(?:.*/)?")
+            index += 3
+        elif pattern.startswith("**", index):
+            parts.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            parts.append("[^/]*")
+            index += 1
+        elif pattern[index] == "?":
+            parts.append("[^/]")
+            index += 1
+        else:
+            parts.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("^" + "".join(parts) + "$")
+
+
+NEXT_COMPILED = tuple((glob_regex(pattern), gate, pattern) for pattern, gate in NEXT_RULES[:-1])
+NEXT_UNKNOWN = NEXT_RULES[-1]
+
+
+def normalize_path(path: str) -> str:
+    """Make a changed path a clean repository-relative path when it can be."""
+    text = path.strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    candidate = Path(text)
+    if not candidate.is_absolute():
+        return text
+    for base in (ROOT, Path.cwd()):
+        try:
+            return candidate.resolve().relative_to(base.resolve()).as_posix()
+        except (ValueError, OSError):
+            continue
+    return text
+
+
+def next_rule(path: str):
+    """Return the first table rule that matches a path, as (gate, pattern)."""
+    candidates = [path]
+    if path.endswith("/"):
+        # `git status` reports a whole new folder, not its files: probe inside it.
+        candidates.append(path.rstrip("/") + "/_")
+    for candidate in candidates:
+        for regex, gate, pattern in NEXT_COMPILED:
+            if regex.match(candidate):
+                return gate, pattern
+    return NEXT_UNKNOWN[1], NEXT_UNKNOWN[0]
+
+
+def next_reasons(paths) -> list:
+    reasons = []
+    seen = set()
+    for path in paths:
+        normalized = normalize_path(path)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        gate, pattern = next_rule(normalized)
+        reasons.append({"path": normalized, "gate": gate, "rule": pattern})
+    return reasons
+
+
+def next_gate(reasons) -> str:
+    gate = "none"
+    for reason in reasons:
+        if NEXT_GATES.index(reason["gate"]) > NEXT_GATES.index(gate):
+            gate = reason["gate"]
+    return gate
+
+
+def res_path(path: str) -> str:
+    """Turn a changed game path into the res:// path that `check --script` wants."""
+    if path.startswith("res://"):
+        return path
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = ROOT / path
+    try:
+        return "res://" + candidate.resolve().relative_to(GAME_DIR.resolve()).as_posix()
+    except (ValueError, OSError):
+        pass
+    text = path.replace("\\", "/")
+    prefix = GAME_DIR.name + "/"
+    if text.startswith(prefix):
+        text = text[len(prefix):]
+    return "res://" + text
+
+
+def next_commands(gate: str, reasons) -> list:
+    """Return the argv of each command for a gate, without the `bin/gai` prefix."""
+    if gate == "none":
+        return []
+    if gate == "check":
+        return [["check"]]
+    if gate == "rebuild-check":
+        return [["build"], ["check"]]
+    scripts = [reason["path"] for reason in reasons if reason["gate"] == "script"]
+    return [["check", "--script", res_path(path), "--no-run"] for path in scripts]
+
+
+def next_command_text(commands) -> str:
+    return " && ".join(
+        "bin/gai " + " ".join(str(part) for part in command) for command in commands
+    )
+
+
+def changed_paths() -> list:
+    """Read the change set from git when `next` gets no paths."""
+    result = git("status", "--porcelain", check=False)
+    if result.returncode != 0:
+        die(f"git status failed: {(result.stderr or result.stdout).strip()}")
+    paths = []
+    for line in result.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        entry = line[3:]
+        if " -> " in entry:
+            entry = entry.split(" -> ", 1)[1]
+        entry = entry.strip().strip('"')
+        if entry:
+            paths.append(entry)
+    return paths
+
+
+def cmd_next(args) -> int:
+    paths = list(args.paths) if args.paths else changed_paths()
+    reasons = next_reasons(paths)
+    gate = next_gate(reasons)
+    commands = next_commands(gate, reasons)
+    if args.json:
+        payload = {
+            "gate": gate,
+            "command": next_command_text(commands),
+            "paths": [reason["path"] for reason in reasons],
+            "reasons": reasons,
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"next: gate {gate}")
+        for command in commands:
+            print("next: bin/gai " + " ".join(str(part) for part in command))
+        if not commands:
+            print("next: nothing to run")
+        if not reasons:
+            print("next: no changed paths")
+    if not args.run:
+        return 0
+    for command in commands:
+        result = run([sys.executable, str(Path(__file__).resolve()), *command])
+        if result.returncode != 0:
+            return result.returncode
     return 0
 
 
@@ -3910,6 +4223,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="delete the game's .godot cache after an editor build",
     )
+    build.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="do not route the compiler through ccache or sccache",
+    )
     build.set_defaults(func=cmd_build)
 
     init = sub.add_parser("init", help="add gai project files to a game")
@@ -3951,6 +4269,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check.add_argument("--no-run", action="store_true", help="do not run the main scene")
     check.set_defaults(func=cmd_check)
+
+    next_cmd = sub.add_parser("next", help="print the cheapest gate that covers these changes")
+    next_cmd.add_argument(
+        "paths",
+        nargs="*",
+        help="changed paths (default: git status --porcelain)",
+    )
+    next_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="print the gate, its command, the paths, and one reason per path",
+    )
+    next_cmd.add_argument(
+        "--run",
+        action="store_true",
+        help="run the chosen commands and return the exit code of the first failure",
+    )
+    next_cmd.set_defaults(func=cmd_next)
 
     fmt = sub.add_parser("fmt", help="format the game's GDScript with gdformat")
     # `fmt install` is a word, not a nested subparser: argparse reserves one
@@ -4184,7 +4520,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-ENGINE_ONLY_COMMANDS = {"version", "build", "engine", "upstream"}
+ENGINE_ONLY_COMMANDS = {"version", "build", "engine", "upstream", "next"}
 
 
 def announce_game() -> None:
