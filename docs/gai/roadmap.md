@@ -48,6 +48,10 @@ releases.
 - A crash record names the call a fatal signal interrupted, so a dead engine
   reads as `object.call (handle=… call=…) with SIGSEGV` instead of a closed
   socket.
+- Bridge roles: `--role read-only|write|admin` over one access table, with
+  `.gai/logs/audit.jsonl` recording every mutating call and its outcome.
+- `bin/gai build` answers `--check` from content, not mtimes, and `--objects`
+  compiles one source for a target so a template-only break shows up locally.
 
 ## P0: close the agent protocol
 
@@ -90,11 +94,13 @@ the base without a release to justify them.
 
 ## P1: multi-agent and multi-human (next)
 
-Pi Pocket is shared; the bridge is still a trusted single-user interface.
+Pi Pocket is shared. The bridge has roles and an audit log now; it still trusts
+every client that holds the token, and one role covers the whole process.
 
-- Bridge sessions with names and roles: read-only, write, admin.
-- A capability policy for mutating methods; audit log for writes and
-  `OS.execute`.
+- A role per connection, not per process, so one bridge serves a reviewer and a
+  writer.
+- `OS.execute` and file writes through `object.call` need a name of their own in
+  the audit line, not the generic `object.call`.
 - Presence and scene locks for concurrent agents.
 - Multiuser editor only if humans co-edit a scene. Take Blazium's lock,
   permission, CRDT, and file-sync design, not its 14k-line module blindly.

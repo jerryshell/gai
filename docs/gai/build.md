@@ -23,7 +23,12 @@ From the repository root:
 bin/gai build
 ```
 
-`--check` exits 0 when the binary is current and 1 when a rebuild is needed.
+`--check` exits 0 when the binary is current and 1 when a rebuild is needed. It
+answers from content, not mtimes: a successful build writes
+`.gai/build/<target>-<host>.json` with `HEAD` and a digest of the engine changes,
+and `--check` compares that digest. A checkout, a merge, or a formatter pass that
+rewrites the same bytes no longer reads as a reason to rebuild.
+
 `--force` rebuilds even when it is current. `--dry-run` prints the SCons command.
 `--jobs N` overrides the memory-aware default. The command keeps the platform
 flags in one place; on Linux with `lld` installed it adds `linker=lld` and
@@ -84,7 +89,11 @@ scons platform=linuxbsd target=template_release dev_build=no linker=lld accesski
     bin/obj/modules/<module>/<file>.linuxbsd.template_release.x86_64.o
 ```
 
-That compiles one translation unit in about five seconds.
+That compiles one translation unit in about five seconds. `bin/gai build
+--target template_release --objects <paths>` runs the same thing for the sources
+in a change set, and `bin/gai next` puts it between `build` and `check` for an
+engine `.cpp` change. A header-only change skips it, because one header maps to
+many objects.
 
 ## Compile cache
 

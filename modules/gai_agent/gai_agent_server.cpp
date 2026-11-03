@@ -38,6 +38,7 @@
 #include "core/object/message_queue.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
+#include "core/os/time.h"
 #include "core/string/print_string.h"
 #include "core/templates/hashfuncs.h"
 #include "core/variant/variant_utility.h"
@@ -208,6 +209,72 @@ public:
 	}
 };
 
+namespace {
+
+// One table decides what a role may call. A method that is not here needs an
+// admin, so a new method is closed until someone classifies it.
+const GaiAccessRule GAI_ACCESS_RULES[] = {
+	{ "ping", GaiAccess::READ },
+	{ "api.methods", GaiAccess::READ },
+	{ "api.singletons", GaiAccess::READ },
+	{ "api.autoloads", GaiAccess::READ },
+	{ "classdb.classes", GaiAccess::READ },
+	{ "classdb.class", GaiAccess::READ },
+	{ "classdb.instantiate", GaiAccess::READ },
+	{ "script.classes", GaiAccess::READ },
+	{ "script.class", GaiAccess::READ },
+	{ "object.get", GaiAccess::READ },
+	{ "object.properties", GaiAccess::READ },
+	{ "object.methods", GaiAccess::READ },
+	{ "object.signals", GaiAccess::READ },
+	{ "object.singleton", GaiAccess::READ },
+	{ "object.autoload", GaiAccess::READ },
+	{ "scene.tree", GaiAccess::READ },
+	{ "scene.current", GaiAccess::READ },
+	{ "node.get", GaiAccess::READ },
+	{ "resource.load", GaiAccess::READ },
+	{ "project.get", GaiAccess::READ },
+	{ "run.status", GaiAccess::READ },
+	{ "event.subscribe", GaiAccess::READ },
+	{ "event.unsubscribe", GaiAccess::READ },
+	{ "event.list", GaiAccess::READ },
+	{ "client.list", GaiAccess::READ },
+	{ "object.set", GaiAccess::WRITE },
+	{ "object.call", GaiAccess::WRITE },
+	{ "object.free", GaiAccess::WRITE },
+	{ "node.set", GaiAccess::WRITE },
+	{ "node.create", GaiAccess::WRITE },
+	{ "node.delete", GaiAccess::WRITE },
+	{ "node.reparent", GaiAccess::WRITE },
+	{ "node.add_child", GaiAccess::WRITE },
+	{ "resource.save", GaiAccess::WRITE },
+	{ "project.set", GaiAccess::WRITE },
+	{ "project.save", GaiAccess::WRITE },
+	{ "run.pause", GaiAccess::WRITE },
+	{ "run.resume", GaiAccess::WRITE },
+	{ "run.step", GaiAccess::WRITE },
+	{ "run.time_scale", GaiAccess::WRITE },
+	{ "input.action", GaiAccess::WRITE },
+	{ "input.key", GaiAccess::WRITE },
+	{ "input.mouse", GaiAccess::WRITE },
+	{ "render.screenshot", GaiAccess::WRITE },
+	{ "scene.change", GaiAccess::ADMIN },
+	{ "run.quit", GaiAccess::ADMIN },
+};
+
+const char *gai_access_name(GaiAccess p_access) {
+	switch (p_access) {
+		case GaiAccess::READ:
+			return "read";
+		case GaiAccess::WRITE:
+			return "write";
+		default:
+			return "admin";
+	}
+}
+
+} //namespace
+
 GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("ping", callable_mp(this, &GaiAgentServer::_rpc_ping));
 	rpc.set_method("api.methods", callable_mp(this, &GaiAgentServer::_rpc_api_methods));
@@ -289,6 +356,30 @@ void GaiAgentServer::start() {
 		server = Ref<TCPServer>();
 		return;
 	}
+	const String configured_role = OS::get_singleton()->get_environment("GAI_AGENT_ROLE");
+	if (!configured_role.is_empty()) {
+		role = configured_role;
+	}
+	if (role == "read-only") {
+		role_access = GaiAccess::READ;
+	} else if (role == "write") {
+		role_access = GaiAccess::WRITE;
+	} else if (role != "admin") {
+		print_error("gai_agent: unknown role '" + role + "'; use admin, write, or read-only");
+		server = Ref<TCPServer>();
+		return;
+	}
+	String audit_file = OS::get_singleton()->get_environment("GAI_AUDIT_LOG");
+	if (audit_file.is_empty()) {
+		audit_file = OS::get_singleton()->get_data_path().path_join("gai").path_join("audit.jsonl");
+	}
+	DirAccess::make_dir_recursive_absolute(audit_file.get_base_dir());
+	audit = FileAccess::open(audit_file, FileAccess::WRITE_READ);
+	if (audit.is_null()) {
+		print_error("gai_agent: cannot open the audit log at " + audit_file);
+	}
+	audit_path = audit_file;
+	print_line("GAI_AGENT_ROLE " + role);
 	tree->connect("process_frame", callable_mp(this, &GaiAgentServer::poll));
 	print_line("GAI_AGENT_LISTENING " + itos(port));
 	_install_crash_record();
@@ -655,6 +746,54 @@ void GaiAgentServer::_handle_line(const String &p_line) {
 	_send(JSON::stringify(rpc.make_response_error(JSONRPC::INVALID_REQUEST, "Invalid request")) + "\n");
 }
 
+GaiAccess GaiAgentServer::_required_access(const String &p_method) const {
+	// One table decides what a role may call. An unlisted method needs an admin,
+	// so a new method is closed until someone classifies it.
+	for (const GaiAccessRule &rule : GAI_ACCESS_RULES) {
+		if (p_method == rule.method) {
+			return rule.access;
+		}
+	}
+	return GaiAccess::ADMIN;
+}
+
+bool GaiAgentServer::_role_allows(GaiAccess p_required) const {
+	switch (role_access) {
+		case GaiAccess::READ:
+			return p_required == GaiAccess::READ;
+		case GaiAccess::WRITE:
+			return p_required != GaiAccess::ADMIN;
+		default:
+			return true;
+	}
+}
+
+Dictionary GaiAgentServer::_forbidden(const String &p_method, GaiAccess p_required) {
+	Dictionary error;
+	error["$gai_forbidden"] = vformat("%s needs the %s role; this bridge runs as %s", p_method, gai_access_name(p_required), role);
+	return error;
+}
+
+void GaiAgentServer::_audit(const Dictionary &p_request, const String &p_target, GaiAccess p_access, bool p_allowed) {
+	if (audit.is_null() || p_access == GaiAccess::READ) {
+		return;
+	}
+	// One line per mutating request, written as it happens: the log answers
+	// "who changed what" after the fact, so it must not wait for a shutdown.
+	Dictionary line;
+	line["ts"] = Time::get_singleton()->get_datetime_string_from_system(true);
+	line["pid"] = OS::get_singleton()->get_process_id();
+	line["client"] = current_client != nullptr ? current_client->id : 0;
+	line["role"] = role;
+	line["access"] = gai_access_name(p_access);
+	line["method"] = String(p_request.get("method", ""));
+	line["target"] = p_target;
+	line["allowed"] = p_allowed;
+	audit->seek_end();
+	audit->store_line(JSON::stringify(line));
+	audit->flush();
+}
+
 void GaiAgentServer::_install_crash_record() {
 #ifdef GAI_CRASH_RECORD_ENABLED
 	if (gai_crash.installed) {
@@ -735,6 +874,12 @@ Variant GaiAgentServer::_process_request(const Dictionary &p_request, const Vari
 		if (dict.has("method")) {
 			target += " call=" + String(dict["method"]);
 		}
+	}
+	const GaiAccess required = _required_access(method);
+	const bool allowed = _role_allows(required);
+	_audit(p_request, target, required, allowed);
+	if (!allowed) {
+		return rpc.make_response_error(-32003, String(Dictionary(_forbidden(method, required))["$gai_forbidden"]), p_id);
 	}
 	_arm_crash_record(method, target);
 	const Variant response = rpc.process_action(p_request);
@@ -920,6 +1065,7 @@ Variant GaiAgentServer::_rpc_ping(const Variant &p_params) {
 	Dictionary result;
 	result["pong"] = true;
 	result["engine"] = String(VERSION_FULL_NAME);
+	result["role"] = role;
 	result["pid"] = OS::get_singleton()->get_process_id();
 	result["clients"] = clients.size();
 	if (current_client != nullptr) {

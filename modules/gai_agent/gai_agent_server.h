@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/io/file_access.h"
 #include "core/io/stream_peer_tcp.h"
 #include "core/io/tcp_server.h"
 #include "core/object/object.h"
@@ -47,6 +48,15 @@ class Node;
 class GaiAgentEventCallable;
 struct MethodInfo;
 struct PropertyInfo;
+
+enum class GaiAccess { READ,
+	WRITE,
+	ADMIN };
+
+struct GaiAccessRule {
+	const char *method;
+	GaiAccess access;
+};
 
 class GaiAgentServer : public Object {
 	struct EventSubscriber {
@@ -101,6 +111,10 @@ class GaiAgentServer : public Object {
 	int next_subscription_id = 1;
 	JSONRPC rpc;
 	String token;
+	String role = "admin";
+	GaiAccess role_access = GaiAccess::ADMIN;
+	String audit_path;
+	Ref<FileAccess> audit;
 	int port = 0;
 	SceneTree *tree = nullptr;
 	HashMap<ObjectID, Ref<RefCounted>> refs;
@@ -186,6 +200,11 @@ class GaiAgentServer : public Object {
 	void _prune_bindings();
 	void _send_to(int p_client_id, const String &p_payload);
 	void _queue_event(const String &p_binding_key, const Array &p_args);
+
+	GaiAccess _required_access(const String &p_method) const;
+	bool _role_allows(GaiAccess p_required) const;
+	Dictionary _forbidden(const String &p_method, GaiAccess p_required);
+	void _audit(const Dictionary &p_request, const String &p_target, GaiAccess p_access, bool p_allowed);
 
 	Script *_load_script(const String &p_path, uint64_t &r_mtime, bool &r_cached);
 	Array _script_index(bool p_refresh);
