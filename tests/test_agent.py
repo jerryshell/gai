@@ -664,6 +664,12 @@ class AgentTest(unittest.TestCase):
 
         status = self.run_gai("agent", "status")
         self.assertIn("delay_msec", status.stdout)
+
+        call = self.run_gai("agent", "call", "ping", "{}")
+        self.assertEqual(call.returncode, 1, call.stdout + call.stderr)
+        self.assertIn("delay_msec", call.stderr)
+        self.assertIn("SIGSEGV", call.stderr)
+
         stop = self.run_gai("agent", "stop")
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
 

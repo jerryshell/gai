@@ -61,3 +61,11 @@ signals, methods, constants, and doc from the engine.
 
 Revisit if the engine gains a runtime class registration path, or if the scan
 cost shows up in a large project.
+
+## Addendum 2026-11-03
+
+The first version loaded a script with the default cache mode. A test edited a
+script, called `refresh`, and still read the old export default. Both reuse and
+replace route to `GDScriptCache`, so a reload must pass `CACHE_MODE_IGNORE`. A
+script then parses again on change, not on every call, and the bridge keeps the
+`Ref<Script>` for a file whose modification time did not move.

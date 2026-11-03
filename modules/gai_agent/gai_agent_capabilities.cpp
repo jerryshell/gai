@@ -583,7 +583,10 @@ Script *GaiAgentServer::_load_script(const String &p_path, uint64_t &r_mtime, bo
 		r_cached = true;
 		return found->script.ptr();
 	}
-	const Ref<Resource> resource = ResourceLoader::load(p_path);
+	// CACHE_MODE_IGNORE parses the file again. REUSE and REPLACE both route to
+	// GDScriptCache and keep answering with the script that was loaded the first
+	// time, so an edited script would report its old surface forever.
+	const Ref<Resource> resource = ResourceLoader::load(p_path, "", ResourceLoader::CACHE_MODE_IGNORE);
 	Script *script = Object::cast_to<Script>(resource.ptr());
 	if (script == nullptr) {
 		script_cache.erase(p_path);

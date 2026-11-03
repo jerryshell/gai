@@ -97,6 +97,11 @@ second call reports `"cached": true`. `script.classes` with `{"refresh":true}`
 drops both the scan and the loaded scripts. A class name that no script declares
 is an error, not null.
 
+A reload parses the file again instead of asking `ResourceCache`. Both reuse and
+replace route to `GDScriptCache` and keep returning the script that was loaded
+the first time, so an edited script would report its old properties and old doc
+forever. The cost is one parse per script per change, not one per call.
+
 The scan reads up to 2000 `.gd` files under `res://` and skips folders whose
 name starts with `.`.
 
