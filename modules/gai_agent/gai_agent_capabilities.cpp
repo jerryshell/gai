@@ -34,6 +34,8 @@
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
 #include "core/input/input_event.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/resource.h"
 #include "core/io/resource_loader.h"
@@ -243,6 +245,8 @@ Variant GaiAgentServer::_rpc_api_methods(const Variant &p_params) {
 		"classdb.classes",
 		"classdb.class",
 		"classdb.instantiate",
+		"script.classes",
+		"script.class",
 		"object.get",
 		"object.set",
 		"object.call",
@@ -429,6 +433,243 @@ Variant GaiAgentServer::_rpc_classdb_instantiate(const Variant &p_params) {
 		created.insert(id);
 	}
 	return _object_info(object);
+}
+
+Variant GaiAgentServer::_rpc_script_classes(const Variant &p_params) {
+	const bool refresh = p_params.get_type() == Variant::DICTIONARY && (bool)Dictionary(p_params).get("refresh", false);
+	const Array classes = _script_index(refresh);
+	Dictionary result;
+	result["classes"] = classes;
+	result["count"] = classes.size();
+	result["cached"] = script_cache.size();
+	return result;
+}
+
+Array GaiAgentServer::_script_index(bool p_refresh) {
+	if (p_refresh) {
+		script_cache.clear();
+		script_index.clear();
+		script_index_built = false;
+	}
+	if (script_index_built) {
+		return script_index;
+	}
+	// The engine writes its global class cache in the editor only, so a game run
+	// starts without one. Scan res:// for class_name too, so a project that was
+	// never imported still answers.
+	const TypedArray<Dictionary> imported = ProjectSettings::get_singleton()->get_global_class_list();
+	HashMap<String, bool> seen;
+	script_index.clear();
+	for (int index = 0; index < imported.size(); index++) {
+		const Dictionary item = imported[index];
+		const String class_name = item.get("class", String());
+		if (class_name.is_empty() || seen.has(class_name)) {
+			continue;
+		}
+		Dictionary entry;
+		entry["class"] = class_name;
+		entry["path"] = item.get("path", String());
+		entry["base"] = item.get("base", String());
+		entry["language"] = item.get("language", String());
+		entry["source"] = "import cache";
+		seen[class_name] = true;
+		script_index.push_back(entry);
+	}
+	Vector<Dictionary> scanned;
+	int budget = 2000;
+	_scan_scripts("res://", scanned, budget);
+	for (const Dictionary &entry : scanned) {
+		const String class_name = entry.get("class", String());
+		if (class_name.is_empty() || seen.has(class_name)) {
+			continue;
+		}
+		seen[class_name] = true;
+		script_index.push_back(entry);
+	}
+	script_index_built = true;
+	return script_index;
+}
+
+void GaiAgentServer::_scan_scripts(const String &p_dir, Vector<Dictionary> &r_out, int &r_budget) {
+	if (r_budget <= 0) {
+		return;
+	}
+	const Ref<DirAccess> dir = DirAccess::open(p_dir);
+	if (dir.is_null()) {
+		return;
+	}
+	dir->list_dir_begin();
+	String name = dir->get_next();
+	while (!name.is_empty() && r_budget > 0) {
+		const bool is_dir = dir->current_is_dir();
+		if (name.begins_with(".")) {
+			name = dir->get_next();
+			continue;
+		}
+		const String path = p_dir.path_join(name);
+		if (is_dir) {
+			_scan_scripts(path, r_out, r_budget);
+		} else if (name.get_extension().to_lower() == "gd") {
+			r_budget--;
+			const Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
+			if (file.is_valid()) {
+				const String text = file->get_as_text();
+				String class_name;
+				String base;
+				for (const String &line : text.split("\n")) {
+					const String trimmed = line.strip_edges();
+					if (class_name.is_empty() && trimmed.begins_with("class_name ")) {
+						class_name = trimmed.substr(11).strip_edges().get_slice(" ", 0).get_slice("\t", 0);
+					} else if (base.is_empty() && trimmed.begins_with("extends ")) {
+						base = trimmed.substr(8).strip_edges().get_slice("(", 0).get_slice(".", 0).get_slice(" ", 0);
+					}
+				}
+				if (!class_name.is_empty()) {
+					Dictionary entry;
+					entry["class"] = class_name;
+					entry["path"] = path;
+					entry["base"] = base;
+					entry["language"] = "GDScript";
+					entry["source"] = "res:// scan";
+					r_out.push_back(entry);
+				}
+			}
+		}
+		name = dir->get_next();
+	}
+	dir->list_dir_end();
+}
+
+Variant GaiAgentServer::_rpc_script_class(const Variant &p_params) {
+	if (p_params.get_type() != Variant::DICTIONARY) {
+		return _error("params must be an object");
+	}
+	const Dictionary params = p_params;
+	String path = params.get("path", String());
+	const String class_name = params.get("name", String());
+	if (path.is_empty() && !class_name.is_empty()) {
+		const Array classes = _script_index(false);
+		for (int index = 0; index < classes.size(); index++) {
+			const Dictionary item = classes[index];
+			if (String(item.get("class", String())) == class_name) {
+				path = item.get("path", String());
+				break;
+			}
+		}
+	}
+	if (path.is_empty()) {
+		return _error("unknown script class: " + (class_name.is_empty() ? String("no name or path") : class_name));
+	}
+	if (!path.begins_with("res://")) {
+		return _error("script path must start with res://: " + path);
+	}
+	uint64_t mtime = 0;
+	bool cached = false;
+	if (_load_script(path, mtime, cached) == nullptr) {
+		return _error("cannot load script: " + path);
+	}
+	const ScriptEntry *entry = script_cache.getptr(path);
+	if (entry == nullptr) {
+		return _error("cannot read script: " + path);
+	}
+	return _script_entry_dict(*entry, cached);
+}
+
+Script *GaiAgentServer::_load_script(const String &p_path, uint64_t &r_mtime, bool &r_cached) {
+	r_mtime = FileAccess::get_modified_time(p_path);
+	r_cached = false;
+	ScriptEntry *found = script_cache.getptr(p_path);
+	if (found != nullptr && found->script.is_valid() && found->mtime == r_mtime) {
+		r_cached = true;
+		return found->script.ptr();
+	}
+	// CACHE_MODE_IGNORE parses the file again. REUSE and REPLACE both route to
+	// GDScriptCache and keep answering with the script that was loaded the first
+	// time, so an edited script would report its old surface forever.
+	const Ref<Resource> resource = ResourceLoader::load(p_path, "", ResourceLoader::CACHE_MODE_IGNORE);
+	Script *script = Object::cast_to<Script>(resource.ptr());
+	if (script == nullptr) {
+		script_cache.erase(p_path);
+		return nullptr;
+	}
+	ScriptEntry entry;
+	entry.script = Ref<Script>(script);
+	entry.mtime = r_mtime;
+	script_cache[p_path] = entry;
+	return script;
+}
+
+Dictionary GaiAgentServer::_script_entry_dict(const ScriptEntry &p_entry, bool p_cached) {
+	Script *script = p_entry.script.ptr();
+	const StringName global_name = script->get_global_name();
+	Dictionary info;
+	info["name"] = global_name.is_empty() ? String(script->get_path().get_file().get_basename()) : String(global_name);
+	info["class"] = String(global_name);
+	info["path"] = script->get_path();
+	info["base"] = script->get_instance_base_type();
+	info["cached"] = p_cached;
+	ScriptLanguage *language = script->get_language();
+	info["language"] = language != nullptr ? String(language->get_name()) : String();
+	info["tool"] = script->is_tool();
+
+	List<PropertyInfo> properties;
+	script->get_script_property_list(&properties);
+	Array property_list;
+	for (const PropertyInfo &property : properties) {
+		// The editor hides these the same way: categories and the script slot are
+		// not the script's own data.
+		if (property.usage & (PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP)) {
+			continue;
+		}
+		if (property.name == "script" && property.type == Variant::NIL) {
+			continue;
+		}
+		Dictionary item = _property_dict(property);
+		item["type_name"] = Variant::get_type_name(property.type);
+		item["exported"] = (property.usage & PROPERTY_USAGE_EDITOR) != 0;
+		property_list.push_back(item);
+	}
+	info["properties"] = property_list;
+
+	List<MethodInfo> methods;
+	script->get_script_method_list(&methods);
+	Array method_list;
+	for (const MethodInfo &method : methods) {
+		method_list.push_back(_method_dict(method));
+	}
+	info["methods"] = method_list;
+
+	List<MethodInfo> signals;
+	script->get_script_signal_list(&signals);
+	Array signal_list;
+	for (const MethodInfo &signal : signals) {
+		signal_list.push_back(_method_dict(signal));
+	}
+	info["signals"] = signal_list;
+
+	HashMap<StringName, Variant> constants;
+	script->get_constants(&constants);
+	Dictionary constant_map;
+	for (const KeyValue<StringName, Variant> &constant : constants) {
+		if (constant.value.get_type() == Variant::OBJECT) {
+			continue;
+		}
+		constant_map[String(constant.key)] = _json_value(constant.value);
+	}
+	info["constants"] = constant_map;
+
+#ifdef TOOLS_ENABLED
+	// A template build has no doc generation, so the virtual is editor-only.
+	const Vector<DocData::ClassDoc> docs = script->get_documentation();
+	for (const DocData::ClassDoc &doc : docs) {
+		if (!global_name.is_empty() && doc.name != String(global_name)) {
+			continue;
+		}
+		info["doc"] = DocData::ClassDoc::to_dict(doc);
+		break;
+	}
+#endif
+	return info;
 }
 
 Variant GaiAgentServer::_rpc_object_singleton(const Variant &p_params) {

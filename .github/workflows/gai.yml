@@ -31,6 +31,8 @@ jobs:
         run: python3 tests/test_upstream.py
       - name: Test the build command
         run: python3 tests/test_build.py
+      - name: Test the next command
+        run: python3 tests/test_next.py
       - name: Test the init command
         run: python3 tests/test_init.py
 
@@ -83,6 +85,8 @@ jobs:
         run: python3 bin/gai check
       - name: Test the build command
         run: python3 tests/test_build.py
+      - name: Test the next command
+        run: python3 tests/test_next.py
       - name: Test the init command
         run: python3 tests/test_init.py
       - name: Test native export preflight

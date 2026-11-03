@@ -34,6 +34,7 @@
 #include "core/io/tcp_server.h"
 #include "core/object/object.h"
 #include "core/object/ref_counted.h"
+#include "core/object/script_language.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "core/variant/callable.h"
@@ -75,6 +76,11 @@ class GaiAgentServer : public Object {
 		Array args;
 	};
 
+	struct ScriptEntry {
+		Ref<Script> script;
+		uint64_t mtime = 0;
+	};
+
 	struct Client {
 		int id = 0;
 		Ref<StreamPeerTCP> peer;
@@ -99,6 +105,9 @@ class GaiAgentServer : public Object {
 	SceneTree *tree = nullptr;
 	HashMap<ObjectID, Ref<RefCounted>> refs;
 	HashSet<ObjectID> created;
+	HashMap<String, ScriptEntry> script_cache;
+	Array script_index;
+	bool script_index_built = false;
 	int step_frames = 0;
 	bool step_restore_pause = false;
 
@@ -109,6 +118,8 @@ class GaiAgentServer : public Object {
 	Variant _rpc_classdb_classes(const Variant &p_params);
 	Variant _rpc_classdb_class(const Variant &p_params);
 	Variant _rpc_classdb_instantiate(const Variant &p_params);
+	Variant _rpc_script_classes(const Variant &p_params);
+	Variant _rpc_script_class(const Variant &p_params);
 	Variant _rpc_object_get(const Variant &p_params);
 	Variant _rpc_object_set(const Variant &p_params);
 	Variant _rpc_object_call(const Variant &p_params);
@@ -175,6 +186,16 @@ class GaiAgentServer : public Object {
 	void _prune_bindings();
 	void _send_to(int p_client_id, const String &p_payload);
 	void _queue_event(const String &p_binding_key, const Array &p_args);
+
+	Script *_load_script(const String &p_path, uint64_t &r_mtime, bool &r_cached);
+	Array _script_index(bool p_refresh);
+	void _scan_scripts(const String &p_dir, Vector<Dictionary> &r_out, int &r_budget);
+	Dictionary _script_entry_dict(const ScriptEntry &p_entry, bool p_cached);
+
+	void _install_crash_record();
+	void _remove_crash_record();
+	void _arm_crash_record(const String &p_method, const String &p_target);
+	void _disarm_crash_record();
 
 	void _handle(Client *p_client, const String &p_line);
 	void _handle_line(const String &p_line);

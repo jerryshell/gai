@@ -37,6 +37,17 @@ releases.
 - Docs: `testing.md`, `mcp.md`, feature docs, AGENTS, skill.
 - Scene-test discovery with JUnit, native Windows/Linux export with preflight and
   checksums, template builds, external-game `init`, and bridge autoload discovery.
+- `bin/gai next` maps a change to the cheapest sufficient gate, with `--json` and
+  `--run`.
+- `bin/gai build` routes the compiler through `sccache` or `ccache` when one is on
+  PATH; `--no-cache` disables it.
+- `script.classes` and `script.class` on the bridge: class name, properties,
+  signals, methods, constants, and doc, from the import cache or a `res://` scan.
+- `.gai/logs/diagnostics.json` from `check` and `lint`, with `--json` on both and
+  the record attached to the MCP `gai_check` payload.
+- A crash record names the call a fatal signal interrupted, so a dead engine
+  reads as `object.call (handle=… call=…) with SIGSEGV` instead of a closed
+  socket.
 
 ## P0: close the agent protocol
 

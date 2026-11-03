@@ -44,6 +44,7 @@ everything else.
 | Namespace | Methods | What it reaches |
 | --- | --- | --- |
 | `classdb` | `classes`, `class`, `instantiate` | Every class, its properties, methods, signals, constants, and enums. |
+| `script` | `classes`, `class` | Every GDScript `class_name`, its properties, methods, signals, constants, and doc. |
 | `object` | `get`, `set`, `call`, `properties`, `methods`, `signals`, `singleton`, `autoload`, `free` | Any live object, any property, any method, any signal list. |
 | `api` | `methods`, `singletons`, `autoloads` | The bridge surface, the engine singleton registry, and project autoloads. |
 
@@ -61,7 +62,48 @@ instantiated, so it can have no handle.
 
 This is the completeness path for native classes: if `ClassDB` knows it, the
 agent can discover and call it. GDScript `class_name` classes are not in
-`ClassDB`; reach them through node or object handles.
+`ClassDB`; `script.*` reaches them without a read of the source file.
+
+## Script classes
+
+`classdb.*` reflects the engine. `script.*` reflects the game's own scripts, so
+an agent does not have to read and parse a `.gd` file to learn its surface.
+
+```sh
+bin/gai agent call script.classes '{}'
+bin/gai agent call script.class '{"name":"Player"}'
+bin/gai agent call script.class '{"path":"res://scripts/player.gd"}'
+```
+
+`script.classes` returns `classes`, `count`, and `cached`. Each entry has
+`class`, `path`, `base`, `language`, and `source`. `source` is `import cache`
+for a class the engine registered, and `res:// scan` for a class found by
+reading the project. The engine writes its global class cache in the editor
+only, so a game run starts without one: the scan is what makes a fresh project
+answer.
+
+`script.class` takes `name` or `path` and returns:
+
+- `class`, `name`, `path`, `base`, `language`, `tool`, `cached`;
+- `properties`, with `name`, `type`, `type_name`, `hint`, `hint_string`, `usage`,
+  and `exported`;
+- `methods` and `signals`, with arguments, return type, and defaults;
+- `constants`, as values when they are JSON, skipped when they are objects;
+- `doc`, when the build carries the parsed class doc: brief, description, and
+  per-member text.
+
+The bridge keeps a loaded script per path, keyed by file modification time. A
+second call reports `"cached": true`. `script.classes` with `{"refresh":true}`
+drops both the scan and the loaded scripts. A class name that no script declares
+is an error, not null.
+
+A reload parses the file again instead of asking `ResourceCache`. Both reuse and
+replace route to `GDScriptCache` and keep returning the script that was loaded
+the first time, so an edited script would report its old properties and old doc
+forever. The cost is one parse per script per change, not one per call.
+
+The scan reads up to 2000 `.gd` files under `res://` and skips folders whose
+name starts with `.`.
 
 ## Subsystems
 
@@ -184,6 +226,31 @@ and `set` remain path-based sugar. `bin/gai agent watch` keeps one connection
 open, prints each event notification as one JSON line on stdout, and writes its
 status to stderr. `--count N` stops after N events.
 
+## Crash record
+
+A fatal signal in the game process ends the engine. Before it dies, the bridge
+writes one file that names the call it was running:
+
+```json
+{"schema": 1, "pid": 4242, "method": "object.call",
+ "target": "handle=335544339 call=spin", "started_ms": 48123,
+ "signal": "SIGSEGV", "signal_num": 11}
+```
+
+- The path is `.gai/logs/bridge-crash.json`, set through `GAI_CRASH_RECORD` by
+  `bin/gai agent start`. Without that variable the bridge uses the engine user
+  data directory.
+- The record is formatted before the call and written by the handler with one
+  `write`, so the handler allocates nothing and takes no lock.
+- A clean shutdown deletes the record. A record therefore always describes a
+  crash that has no response.
+- A read-only bridge client sees the reason instead of a dead socket:
+  `bin/gai agent call` and `bin/gai agent status` print the method, the target,
+  and the signal.
+- The signal is handed back to the default handler, so the core dump and the
+  engine's own crash path still run. The bridge does not resume the call.
+- Linux and macOS only. On Windows there is no record.
+
 ## Security
 
 - A random token per session. It is stored in `.gai/agent.json` with mode 600.
@@ -204,16 +271,23 @@ status to stderr. `--count N` stops after N events.
 python3 tests/test_agent.py
 ```
 
-Nine tests: scene get/set and auth, capability surface, autoloads, editor mode,
+Eleven tests: scene get/set and auth, capability surface, autoloads, editor mode,
 concurrent start, foreign PID safety, multi-client event delivery, event replay,
-and batch requests. They need a source build. The `engine` CI job builds the
-engine and runs them. A local run needs a binary built from the current HEAD.
+and batch requests. `test_script_reflection` covers `script.classes` and
+`script.class`. `test_crash_record_names_the_call` sends `SIGSEGV` during a
+blocking call and reads the record back. They need a source build. The `engine`
+CI job builds the engine and runs them. A local run needs a binary built from
+the current HEAD.
 
 ## Not yet
 
 - A per-request deadline or task id. A long single request blocks all clients
   until it returns; the batch deadline only bounds the next batch item. Read
   `docs/gai/decisions/0004-synchronous-requests.md`.
+- A protected call. A fatal signal still ends the process; the record names the
+  call but cannot contain the fault. Linux has no structured exception handler,
+  and a `longjmp` out of a signal handler leaves engine locks held.
+- A crash record on Windows, which would need an unhandled-exception filter.
 - Durable event history. The last 512 events live in memory; a restart clears
   them.
 - Export helpers. Export internals are reachable through editor objects when

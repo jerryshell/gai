@@ -4,10 +4,12 @@
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -25,6 +27,20 @@ def built_engine():
 
 
 ENGINE = built_engine() or os.environ.get("GAI_GODOT")
+
+PROBE_SCRIPT = """class_name Probe
+extends Node2D
+
+signal pinged(count: int)
+
+const LIMIT: int = 3
+
+@export var speed: float = 12.0
+
+## Poke the probe and return the count.
+func poke(times: int = 1) -> int:
+\treturn times
+"""
 
 
 class AgentTest(unittest.TestCase):
@@ -538,6 +554,121 @@ class AgentTest(unittest.TestCase):
         shot = self.run_gai("agent", "call", "render.screenshot", '{"path":"user://shot.png"}')
         self.assertEqual(shot.returncode, 1)
         self.assertIn("display", shot.stderr)
+
+        stop = self.run_gai("agent", "stop")
+        self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+
+    def state(self):
+        return json.loads((self.tmp / ".gai" / "agent.json").read_text(encoding="utf-8"))
+
+    def request(self, method: str, params=None):
+        state = self.state()
+        payload = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params or {},
+            "token": state["token"],
+        })
+        return self.raw(payload + "\n")
+
+    def rpc(self, method: str, params=None):
+        response = self.request(method, params)
+        if "error" in response:
+            raise AssertionError(response["error"])
+        return response["result"]
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_script_reflection(self):
+        (self.tmp / "game" / "scripts" / "probe.gd").write_text(PROBE_SCRIPT, encoding="utf-8")
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+
+        classes = self.rpc("script.classes")
+        listed = {item["class"]: item for item in classes["classes"]}
+        self.assertIn("Probe", listed)
+        self.assertEqual(listed["Probe"]["path"], "res://scripts/probe.gd")
+        self.assertEqual(classes["count"], len(classes["classes"]))
+
+        detail = self.rpc("script.class", {"name": "Probe"})
+        self.assertEqual(detail["class"], "Probe")
+        self.assertEqual(detail["path"], "res://scripts/probe.gd")
+        self.assertEqual(detail["base"], "Node2D")
+        properties = {item["name"]: item for item in detail["properties"]}
+        self.assertEqual(properties["speed"]["type_name"], "float")
+        self.assertTrue(properties["speed"]["exported"])
+        self.assertEqual([item["name"] for item in detail["signals"]], ["pinged"])
+        methods = {item["name"]: item for item in detail["methods"]}
+        self.assertIn("poke", methods)
+        self.assertEqual([argument["name"] for argument in methods["poke"]["arguments"]], ["times"])
+        self.assertEqual(detail["constants"], {"LIMIT": 3})
+
+        by_path = self.rpc("script.class", {"path": "res://scripts/probe.gd"})
+        self.assertTrue(by_path["cached"])
+
+        (self.tmp / "game" / "scripts" / "probe.gd").write_text(
+            PROBE_SCRIPT.replace("speed: float = 12.0", "speed: float = 99.0"), encoding="utf-8"
+        )
+        refreshed = self.rpc("script.classes", {"refresh": True})
+        self.assertEqual(refreshed["cached"], 0)
+        self.assertIn("Probe", [item["class"] for item in refreshed["classes"]])
+        reloaded = self.rpc("script.class", {"path": "res://scripts/probe.gd"})
+        self.assertFalse(reloaded["cached"])
+        self.assertIn("99.0", json.dumps(reloaded["doc"]))
+
+        missing = self.request("script.class", {"name": "Missing"})
+        self.assertEqual(missing["error"]["code"], -32602)
+        self.assertIn("unknown script class", missing["error"]["message"])
+
+    @unittest.skipUnless(ENGINE and os.name == "posix", "the crash record needs POSIX signals")
+    def test_crash_record_names_the_call(self):
+        record_path = self.tmp / ".gai" / "logs" / "bridge-crash.json"
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        self.assertFalse(record_path.exists(), "a clean start leaves no crash record")
+        state = self.state()
+
+        os_handle = self.rpc("object.singleton", {"name": "OS"})["handle"]
+        payload = (
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "object.call",
+                "params": {"handle": os_handle, "method": "delay_msec", "args": [3000]},
+                "token": state["token"],
+            })
+            + "\n"
+        )
+
+        def blocking_call():
+            try:
+                self.raw(payload)
+            except (OSError, ValueError):
+                pass
+
+        worker = threading.Thread(target=blocking_call, daemon=True)
+        worker.start()
+        time.sleep(0.8)
+        os.kill(int(state["pid"]), signal.SIGSEGV)
+        worker.join(timeout=15)
+
+        deadline = time.time() + 10
+        while time.time() < deadline and not record_path.exists():
+            time.sleep(0.05)
+        self.assertTrue(record_path.exists(), "the engine wrote no crash record")
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["schema"], 1)
+        self.assertEqual(record["method"], "object.call")
+        self.assertIn("call=delay_msec", record["target"])
+        self.assertEqual(record["signal_num"], signal.SIGSEGV)
+
+        status = self.run_gai("agent", "status")
+        self.assertIn("delay_msec", status.stdout)
+
+        call = self.run_gai("agent", "call", "ping", "{}")
+        self.assertEqual(call.returncode, 1, call.stdout + call.stderr)
+        self.assertIn("delay_msec", call.stderr)
+        self.assertIn("SIGSEGV", call.stderr)
 
         stop = self.run_gai("agent", "stop")
         self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)

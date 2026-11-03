@@ -55,7 +55,8 @@ For a game outside this clone, set `GAI_GAME` in the client environment.
 | `gai_read_file` | Reads a UTF-8 file under the game project, up to 1 MiB. |
 | `gai_screenshot` | Captures the game to a PNG and returns it as image content. Needs a display. |
 | `gai_test` | Runs `bin/gai test --json`; optional `filter`. |
-| `gai_check` | Runs `bin/gai check` and returns its output. |
+| `gai_check` | Runs `bin/gai check`, returns its output and the diagnostics record. |
+| `gai_next` | Runs `bin/gai next --json`; optional `paths`. Returns the cheapest sufficient gate. |
 | `gai_subscribe` | Subscribes to a bridge signal by `path` or `handle`; `since` replays history. |
 | `gai_unsubscribe` | Removes a subscription by id. |
 
@@ -63,9 +64,18 @@ For a game outside this clone, set `GAI_GAME` in the client environment.
 project autoloads; then `{"method": "object.autoload", "params": {"name":
 "Global"}}` returns one. Any bridge method works, including `object.call`.
 
-`gai_test` and `gai_check` start a separate `bin/gai` process. They do not run
-inside the game. Use `--command-timeout` to raise their limit (default 300
-seconds). `gai_check` runs the full gate, including the tests.
+`gai_test`, `gai_check`, and `gai_next` start a separate `bin/gai` process. They
+do not run inside the game. Use `--command-timeout` to raise their limit
+(default 300 seconds). `gai_check` runs the full gate, including the tests.
+
+`gai_check` attaches `diagnostics` when `.gai/logs/diagnostics.json` exists. It
+carries `ok`, `count`, `first`, and one `errors` entry per problem with `path`,
+`line`, `kind`, `severity`, and `message`. A call that killed the engine
+returns the crash record in the tool error, with the method and the target.
+
+`gai_next` is the gate selector. Call it after an edit with the changed paths,
+or without arguments to read `git status`. Run the command it returns instead of
+guessing between one script, the game check, and a rebuild.
 
 ## Events
 
@@ -100,6 +110,7 @@ connection. Bridge events arrive as MCP logging notifications:
 | `gai://docs/testing` | `docs/gai/testing.md`. |
 | `gai://docs/agent-bridge` | `docs/gai/features/agent-bridge.md`. |
 | `gai://logs/check` | The last check log. |
+| `gai://logs/diagnostics` | The last diagnostics record from `check` or `lint`: paths, lines, messages. |
 | `gai://logs/test` | The last test log. |
 
 Resources are read-only.

@@ -59,7 +59,12 @@ GAI_GAME=/path/to/game bin/gai export web --clean --gzip
   error catalog. Pi and other Agent Skills tools load it when a task needs it.
 - `bin/gai check` imports assets, parses every script, runs the main scene, and
   fails on errors. Godot exits 0 on a script error. This command does not. It
-  also fails when the engine does not match the recorded upstream base.
+  also fails when the engine does not match the recorded upstream base. Every
+  run writes `.gai/logs/diagnostics.json`, one record per problem with `path`,
+  `line`, and `message`.
+- `bin/gai next` prints the cheapest gate that still proves a change, for
+  example one script, the game check, or a rebuild plus check. An agent runs the
+  gate instead of guessing.
 - `bin/gai lint` runs the engine's own script analyzer over the game in one
   process and prints `path:line: message` for each problem. `bin/gai fmt`
   formats the scripts with gdformat 4.5.0, and `--check` reports instead of
@@ -68,8 +73,10 @@ GAI_GAME=/path/to/game bin/gai export web --clean --gzip
 - `bin/gai agent` starts the game or editor and exposes the engine's
   reflection: every class, property, method, signal, and singleton through
   handles, plus scene, node, resource, project, run, input, and screenshot
-  methods. `agent call` reaches any method. The gai source build includes it;
-  the official fallback does not.
+  methods. `script.classes` and `script.class` cover the game's own GDScript.
+  `agent call` reaches any method. A fatal signal leaves
+  `.gai/logs/bridge-crash.json` with the call that died. The gai source build
+  includes it; the official fallback does not.
 - `bin/gai steam` builds [GodotSteam](https://godotsteam.com) into the engine.
   `Steam` is a native singleton, so the bridge reaches it like any other class.
   The Steamworks SDK is installed separately and is not committed. Design:

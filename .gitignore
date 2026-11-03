@@ -404,6 +404,7 @@ $RECYCLE.BIN/
 # Downloaded engine and command logs
 /.gai/bin/
 /.gai/logs/
+/.gai/tools/
 
 # Imported game cache
 /game/.godot/

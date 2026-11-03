@@ -189,6 +189,17 @@ def _result_error(message: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
+def _json_document(text: str) -> Any:
+    """Parse one JSON document that starts at the first brace and runs to the end."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        return json.loads(text[start:])
+    except json.JSONDecodeError:
+        return None
+
+
 def _last_json(text: str) -> Any:
     for line in reversed(text.splitlines()):
         line = line.strip()
@@ -334,6 +345,21 @@ class Server:
                     "This can take longer than a bridge call."
                 ),
                 "inputSchema": _schema({}),
+            },
+            {
+                "name": "gai_next",
+                "description": (
+                    "Return the cheapest gate that covers these changes: none, script, "
+                    "check, or rebuild-check, with the command to run. Without paths it "
+                    "reads git status."
+                ),
+                "inputSchema": _schema({
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Changed paths; defaults to git status.",
+                    }
+                }),
             },
             {
                 "name": "gai_subscribe",
@@ -489,6 +515,8 @@ class Server:
             return self.run_test(arguments)
         if name == "gai_check":
             return self.run_check(arguments)
+        if name == "gai_next":
+            return self.run_next(arguments)
         if name == "gai_subscribe":
             return self.subscribe_tool(arguments)
         if name == "gai_unsubscribe":
@@ -618,7 +646,35 @@ class Server:
         if len(output) > 100_000:
             output = output[:100_000] + "\n... truncated"
         payload = {"exit_code": result.get("returncode"), "output": output}
+        diagnostics = self.read_diagnostics()
+        if diagnostics is not None:
+            payload["diagnostics"] = diagnostics
         return ToolFailure(payload) if int(result.get("returncode") or 0) != 0 else payload
+
+    def run_next(self, arguments: dict[str, Any]) -> Any:
+        if self.runner is None:
+            raise ToolError("the next runner is not configured")
+        command = ["next", "--json"]
+        paths = arguments.get("paths", [])
+        if paths:
+            if not isinstance(paths, list) or not all(isinstance(item, str) for item in paths):
+                raise ToolError("paths must be an array of strings")
+            command.extend(paths)
+        result = self.runner(command, self.command_timeout)
+        stdout = str(result.get("stdout", ""))
+        payload = _json_document(stdout)
+        if not isinstance(payload, dict):
+            detail = str(result.get("error") or result.get("stderr") or stdout[-2000:])
+            raise ToolError(f"the next command did not return JSON: {detail}")
+        return payload
+
+    def read_diagnostics(self) -> Any:
+        """Attach the record `check` writes, so a client gets paths and lines."""
+        path = self.runtime / "logs" / "diagnostics.json"
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
 
     def resources_read(self, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict):
@@ -634,6 +690,7 @@ class Server:
                 "text/markdown",
             ),
             "gai://logs/check": (self.runtime / "logs/check.log", "text/plain"),
+            "gai://logs/diagnostics": (self.runtime / "logs/diagnostics.json", "application/json"),
             "gai://logs/test": (self.runtime / "logs/test.log", "text/plain"),
         }
         entry = mapping.get(uri)
@@ -722,10 +779,26 @@ class Server:
         except ToolError:
             raise
         except Exception as exc:
+            # A closed socket usually means the engine died. The record names the
+            # call, so the client does not have to guess which one killed it.
+            crash = self.read_crash_record()
+            if crash is not None and not isinstance(exc, TimeoutError):
+                raise ToolError(f"{exc}; {crash}") from exc
             raise ToolError(str(exc)) from exc
         if isinstance(value, dict) and "$gai_error" in value:
             raise ToolError(str(value["$gai_error"]))
         return value
+
+    def read_crash_record(self) -> str | None:
+        path = self.runtime / "logs" / "bridge-crash.json"
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return (
+            f"the engine died in {record.get('method', 'a call')} "
+            f"({record.get('target', 'no target')}) with {record.get('signal', 'a fatal signal')}"
+        )
 
     def _required_string(self, arguments: dict[str, Any], name: str) -> str:
         value = arguments.get(name)
