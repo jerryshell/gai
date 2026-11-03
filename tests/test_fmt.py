@@ -168,6 +168,29 @@ class FmtTest(unittest.TestCase):
         self.assertIn("scripts/main.gd", args)
         self.assertFalse([item for item in args if item.startswith("addons/")])
 
+    def test_a_gdignore_directory_is_not_project_code(self):
+        self.fake_gdformat()
+        vendor = self.game / "vendor" / "engine" / "engine.gd"
+        vendor.parent.mkdir(parents=True)
+        vendor.write_text("extends Node\n", encoding="utf-8")
+        (self.game / "vendor" / ".gdignore").write_text("", encoding="utf-8")
+        result = self.run_gai("fmt")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = self.recorded_args()
+        self.assertIn("scripts/main.gd", args)
+        self.assertFalse([item for item in args if item.startswith("vendor/")])
+
+    def test_a_named_path_under_gdignore_is_refused(self):
+        self.fake_gdformat()
+        vendor = self.game / "vendor" / "engine" / "engine.gd"
+        vendor.parent.mkdir(parents=True)
+        vendor.write_text("extends Node\n", encoding="utf-8")
+        (self.game / "vendor" / ".gdignore").write_text("", encoding="utf-8")
+        result = self.run_gai("fmt", "vendor/engine")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(".gdignore", result.stderr)
+        self.assertFalse(self.args_file.exists())
+
     def test_a_named_addon_folder_is_still_formatted(self):
         self.fake_gdformat()
         addon = self.game / "addons" / "vendor" / "vendor.gd"
