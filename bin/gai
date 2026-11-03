@@ -25,7 +25,7 @@ import time
 import urllib.request
 import zipfile
 from xml.sax.saxutils import escape, quoteattr
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +61,8 @@ VERSION_FILE = GAI_DIR / "version"
 AGENT_STATE = RUNTIME_DIR / "agent.json"
 AGENT_LOCK = RUNTIME_DIR / "agent.lock"
 AGENT_LOG = RUNTIME_DIR / "agent.log"
+CRASH_RECORD = LOG_DIR / "bridge-crash.json"
+DIAGNOSTICS = LOG_DIR / "diagnostics.json"
 
 STEAM_DIR = ROOT / "modules" / "godotsteam"
 STEAM_SDK = STEAM_DIR / "sdk"
@@ -128,6 +130,12 @@ ERROR_LINE = re.compile(r"^(?:ERROR|SCRIPT ERROR|SHADER ERROR):")
 def die(message: str, code: int = 1) -> None:
     print(f"gai: {message}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def progress(args, message: str) -> None:
+    """A progress line goes to stderr when stdout is a JSON record."""
+    file = sys.stderr if getattr(args, "json", False) else sys.stdout
+    print(message, file=file, flush=True)
 
 
 def show_path(path: Path) -> str:
@@ -2014,7 +2022,7 @@ def cmd_check(args) -> int:
     fresh_import = not (GAME_DIR / ".godot").is_dir()
     steps = [("import", [engine, "--headless", "--path", GAME_DIR, "--import"], not fresh_import)]
     if fresh_import:
-        print("check: first import, load-before-import errors are ignored", flush=True)
+        progress(args, "check: first import, load-before-import errors are ignored")
         steps.append(("import again", [engine, "--headless", "--path", GAME_DIR, "--import"]))
     preflight = []
     if (GAME_DIR / "addons" / "godotsteam" / "godotsteam.gdextension").is_file():
@@ -2023,7 +2031,7 @@ def cmd_check(args) -> int:
     checker_scene = None
     if autoloads:
         checker_scene = write_script_checker()
-        print(f"check: {len(autoloads)} autoloads, scripts load in a scene", flush=True)
+        progress(args, f"check: {len(autoloads)} autoloads, scripts load in a scene")
         script_step = [engine, "--headless", "--path", GAME_DIR, checker_scene]
         if getattr(args, "script", None):
             script_step.append("--")
@@ -2085,6 +2093,9 @@ def cmd_check(args) -> int:
         print(f"check: {failures_preview} has no target left", file=sys.stderr)
 
     output = []
+    # Diagnostics come from the steps whose errors count; a first import on a
+    # fresh project prints load-before-import errors that `check` ignores.
+    collected_output = []
     failures = list(preflight) + [f"orphaned {path.relative_to(GAME_DIR).as_posix()}" for path in orphans]
     timed_out = False
     try:
@@ -2102,6 +2113,8 @@ def cmd_check(args) -> int:
                 text = result.stdout or ""
                 output.append(("[ignored first import]\n" if not collect else "") + text)
                 errors = collect_errors(text) if collect else []
+                if collect:
+                    collected_output.append(text)
                 # The headless editor can abort at shutdown after the import. The run step still checks the assets.
                 shutdown_crash = (
                     name == "import"
@@ -2137,17 +2150,29 @@ def cmd_check(args) -> int:
         failures.extend(test_failure_lines(test_summary))
     failures = list(dict.fromkeys(failures))
     version = engine_version(engine) or "unknown"
+    diagnostics = write_diagnostics("check", parse_diagnostics("".join(collected_output), "check"))
 
     if failures:
+        if getattr(args, "json", False):
+            print(json.dumps(diagnostics, indent=2, ensure_ascii=False))
+            return 1
         print(f"check: failed ({version})")
         for line in failures[:12]:
             print(f"  {line}")
         if len(failures) > 12:
             print(f"  ... and {len(failures) - 12} more")
         print(f"full log: {show_path(log_path)}")
+        print(f"diagnostics: {show_path(DIAGNOSTICS)}")
         return 1
 
     main_scene = read_main_scene()
+    if getattr(args, "json", False):
+        diagnostics["version"] = version
+        diagnostics["main_scene"] = main_scene
+        diagnostics["tests"] = test_summary
+        diagnostics["log"] = str(log_path)
+        print(json.dumps(diagnostics, indent=2, ensure_ascii=False))
+        return 0
     print(f"check: ok ({version})")
     print(f"main scene: {main_scene}")
     if test_summary is not None:
@@ -2413,21 +2438,51 @@ def agent_call(state: dict, method: str, params=None, timeout: float = 5.0):
         "params": params or {},
         "token": state["token"],
     }
-    with socket.create_connection(("127.0.0.1", int(state["port"])), timeout=timeout) as sock:
-        sock.settimeout(timeout)
-        sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
-        data = b""
-        while b"\n" not in data:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            data += chunk
+    try:
+        with socket.create_connection(("127.0.0.1", int(state["port"])), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+            data = b""
+            while b"\n" not in data:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+    except OSError as exc:
+        # A closed socket is the usual shape of a crashed engine. The record the
+        # engine wrote before it died names the call, so the next agent does not
+        # have to guess.
+        record = read_crash_record()
+        if record is not None:
+            raise RuntimeError(describe_crash(record)) from exc
+        raise
     if not data:
+        record = read_crash_record()
+        if record is not None:
+            raise RuntimeError(describe_crash(record))
         raise OSError("the agent closed the connection")
     response = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
     if "error" in response:
         raise RuntimeError(response["error"].get("message", "agent error"))
     return response.get("result")
+
+
+def read_crash_record():
+    """Read the record the bridge writes on a fatal signal, or None."""
+    try:
+        return json.loads(CRASH_RECORD.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def describe_crash(record: dict) -> str:
+    method = record.get("method") or "a call"
+    target = record.get("target") or "no target"
+    signal_name = record.get("signal") or "a fatal signal"
+    return (
+        f"the engine died in {method} ({target}) with {signal_name}; "
+        f"record: {show_path(CRASH_RECORD)}"
+    )
 
 
 def agent_result(method: str, params=None):
@@ -2566,6 +2621,9 @@ def _cmd_agent_start(args) -> int:
     env = os.environ.copy()
     env["GAI_AGENT_PORT"] = str(port)
     env["GAI_AGENT_TOKEN"] = token
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    CRASH_RECORD.unlink(missing_ok=True)
+    env["GAI_CRASH_RECORD"] = str(CRASH_RECORD)
     if args.editor:
         env["GAI_AGENT_EDITOR"] = "1"
     AGENT_LOG.write_text("", encoding="utf-8")
@@ -2647,9 +2705,15 @@ def cmd_agent_status(args) -> int:
     state = agent_state()
     if state is None:
         print("agent: not running")
+        record = read_crash_record()
+        if record is not None:
+            print(f"agent: {describe_crash(record)}")
         return 1
     if not agent_pid_alive(int(state.get("pid", 0))):
         print("agent: stale state; run `bin/gai agent stop`")
+        record = read_crash_record()
+        if record is not None:
+            print(f"agent: {describe_crash(record)}")
         return 1
     try:
         result = agent_call(state, "ping", timeout=2)
@@ -3819,6 +3883,75 @@ SCRIPT_AT_LINE = re.compile(r"^at: .*\((?P<path>res://[^()]*):(?P<line>\d+)\)$")
 ERROR_PREFIX = re.compile(r"^(?:ERROR|SCRIPT ERROR|SHADER ERROR):\s*")
 
 
+def diagnostic(path, line, kind, message, source, raw) -> dict:
+    return {
+        "path": path,
+        "line": line,
+        "kind": kind,
+        "severity": "error",
+        "message": message,
+        "source": source,
+        "raw": raw,
+    }
+
+
+def parse_diagnostics(text: str, source: str) -> list:
+    """Turn engine output into records an agent can act on, one per problem.
+
+    The engine prints a problem in two lines: the message, then an `at:` line
+    that names the script. A message with no `at:` line still becomes a record,
+    with no path, because an agent must see it even when it cannot be placed.
+    """
+    noise = set(collect_errors(text))
+    records = []
+    pending = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("at:"):
+            location = SCRIPT_AT_LINE.match(line)
+            if location and pending:
+                records.append(
+                    diagnostic(location.group("path"), int(location.group("line")), "script", pending, source, pending)
+                )
+            pending = ""
+            continue
+        if ERROR_LINE.match(line):
+            if line not in noise:
+                continue
+            pending = ERROR_PREFIX.sub("", line)
+    if pending:
+        records.append(diagnostic(None, None, "engine", pending, source, pending))
+    seen = set()
+    unique = []
+    for record in records:
+        key = (record["path"], record["line"], record["message"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(record)
+    return unique
+
+
+def diagnostics_record(source: str, records: list) -> dict:
+    return {
+        "schema": 1,
+        "source": source,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ok": not records,
+        "count": len(records),
+        "first": records[0] if records else None,
+        "errors": records,
+    }
+
+
+def write_diagnostics(source: str, records: list) -> dict:
+    """Write the one file an agent reads back: LOG_DIR/diagnostics.json."""
+    record = diagnostics_record(source, records)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    DIAGNOSTICS.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return record
+
+
 def as_text(output) -> str:
     if output is None:
         return ""
@@ -4096,31 +4229,14 @@ def cmd_fmt_install(args) -> int:
 def lint_problems(text: str) -> list[tuple[str, int, str]]:
     """Pull `path:line: message` out of the engine's script checker output.
 
-    Measured on 4.7.2, each problem is two lines, and only the second one names
-    the file:
-
-        SCRIPT ERROR: Parse Error: <message>
-                  at: GDScript::reload (res://scripts/x.gd:3)
-
-    A problem with no `at:` line of this shape is dropped: it belongs to the
-    engine, not to a script. `collect_errors` is the noise filter, so the
-    shutdown messages that `check` also ignores stay out.
+    A problem with no `at:` line is dropped: it belongs to the engine, not to a
+    script, and `check` reports those. `parse_diagnostics` keeps both shapes.
     """
-    noise = set(collect_errors(text))
-    problems: list[tuple[str, int, str]] = []
-    pending = ""
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if line.startswith("at:"):
-            location = SCRIPT_AT_LINE.match(line)
-            if location and pending:
-                path = location.group("path")[len("res://") :]
-                problems.append((path, int(location.group("line")), pending))
-            pending = ""
-            continue
-        if ERROR_LINE.match(line) and line in noise:
-            pending = ERROR_PREFIX.sub("", line)
-    return problems
+    return [
+        (record["path"][len("res://") :], record["line"], record["message"])
+        for record in parse_diagnostics(text, "lint")
+        if record["path"]
+    ]
 
 
 def cmd_lint(args) -> int:
@@ -4156,6 +4272,10 @@ def cmd_lint(args) -> int:
         remove_script_checker()
     log_path.write_text(text, encoding="utf-8")
     problems = lint_problems(text)
+    diagnostics = write_diagnostics("lint", parse_diagnostics(text, "lint"))
+    if getattr(args, "json", False):
+        print(json.dumps(diagnostics, indent=2, ensure_ascii=False))
+        return 1 if problems else 0
     for path, line, message in problems:
         print(f"{path}:{line}: {message}")
     print(f"lint: {len(scripts)} scripts, {len(problems)} problems")
@@ -4268,6 +4388,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="only compile this res:// script; repeatable",
     )
     check.add_argument("--no-run", action="store_true", help="do not run the main scene")
+    check.add_argument(
+        "--json",
+        action="store_true",
+        help="print the diagnostics record instead of the failure lines",
+    )
     check.set_defaults(func=cmd_check)
 
     next_cmd = sub.add_parser("next", help="print the cheapest gate that covers these changes")
@@ -4298,6 +4423,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     lint = sub.add_parser("lint", help="run the engine's script analyzer over the game")
     lint.add_argument("paths", nargs="*", help="scripts or folders to lint (default: every .gd)")
+    lint.add_argument("--json", action="store_true", help="print the diagnostics record as JSON")
     lint.set_defaults(func=cmd_lint)
 
     test_cmd = sub.add_parser("test", help="run game tests headlessly")

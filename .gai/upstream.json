@@ -23,6 +23,7 @@
     "modules/godotsteam/UPSTREAM.md",
     "modules/godotsteam/config.py",
     "tests/test_check.py",
+    "tests/test_next.py",
     "tests/test_steam.py",
     "tests/test_upstream.py",
     "version.py"

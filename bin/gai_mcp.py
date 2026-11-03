@@ -618,7 +618,18 @@ class Server:
         if len(output) > 100_000:
             output = output[:100_000] + "\n... truncated"
         payload = {"exit_code": result.get("returncode"), "output": output}
+        diagnostics = self.read_diagnostics()
+        if diagnostics is not None:
+            payload["diagnostics"] = diagnostics
         return ToolFailure(payload) if int(result.get("returncode") or 0) != 0 else payload
+
+    def read_diagnostics(self) -> Any:
+        """Attach the record `check` writes, so a client gets paths and lines."""
+        path = self.runtime / "logs" / "diagnostics.json"
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
 
     def resources_read(self, params: Any) -> dict[str, Any]:
         if not isinstance(params, dict):
@@ -634,6 +645,7 @@ class Server:
                 "text/markdown",
             ),
             "gai://logs/check": (self.runtime / "logs/check.log", "text/plain"),
+            "gai://logs/diagnostics": (self.runtime / "logs/diagnostics.json", "application/json"),
             "gai://logs/test": (self.runtime / "logs/test.log", "text/plain"),
         }
         entry = mapping.get(uri)
@@ -722,10 +734,26 @@ class Server:
         except ToolError:
             raise
         except Exception as exc:
+            # A closed socket usually means the engine died. The record names the
+            # call, so the client does not have to guess which one killed it.
+            crash = self.read_crash_record()
+            if crash is not None and not isinstance(exc, TimeoutError):
+                raise ToolError(f"{exc}; {crash}") from exc
             raise ToolError(str(exc)) from exc
         if isinstance(value, dict) and "$gai_error" in value:
             raise ToolError(str(value["$gai_error"]))
         return value
+
+    def read_crash_record(self) -> str | None:
+        path = self.runtime / "logs" / "bridge-crash.json"
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return (
+            f"the engine died in {record.get('method', 'a call')} "
+            f"({record.get('target', 'no target')}) with {record.get('signal', 'a fatal signal')}"
+        )
 
     def _required_string(self, arguments: dict[str, Any], name: str) -> str:
         value = arguments.get(name)
