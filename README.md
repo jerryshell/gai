@@ -60,6 +60,11 @@ GAI_GAME=/path/to/game bin/gai export web --clean --gzip
 - `bin/gai check` imports assets, parses every script, runs the main scene, and
   fails on errors. Godot exits 0 on a script error. This command does not. It
   also fails when the engine does not match the recorded upstream base.
+- `bin/gai lint` runs the engine's own script analyzer over the game in one
+  process and prints `path:line: message` for each problem. `bin/gai fmt`
+  formats the scripts with gdformat 4.5.0, and `--check` reports instead of
+  writing. A project can replace either command from `[gai]` in
+  `project.godot`. See `docs/gai/architecture.md`.
 - `bin/gai agent` starts the game or editor and exposes the engine's
   reflection: every class, property, method, signal, and singleton through
   handles, plus scene, node, resource, project, run, input, and screenshot

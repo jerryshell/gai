@@ -101,6 +101,19 @@ script, runs the main scene, and runs `game/tests` when the runner exists. It
 also refuses an engine or `version.py` that does not match the base tag, and it
 fails on a `.uid` or `.import` file whose target is gone. This is the game gate.
 
+## Format and lint
+
+`bin/gai fmt` runs gdformat 4.5.0 over the game's scripts, or the project's own
+`format_command` from `[gai]` in `project.godot`; `--check` reports instead of
+writing. A project that sets `format_command` must set
+`format_check_command` too, because gai never guesses a check form.
+`bin/gai fmt install` builds the pinned gdformat under `.gai/tools`.
+
+`bin/gai lint` runs the engine's own script analyzer in one process and prints
+`path:line: message` for each problem. The project's warning levels decide what
+counts, so gai carries no rules of its own. A project that sets `lint_command`
+replaces the analyzer and needs no engine.
+
 ## Limits
 
 - The game lives in `game/`. The repository root is not a Godot project.
