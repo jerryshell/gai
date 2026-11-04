@@ -229,6 +229,10 @@ It is the highest gate of the paths it was given:
 | `*.md`, `docs/`, `AGENTS.md`, `tests/*.py`, `.github/` | `none` | nothing |
 | anything else | `check` | `bin/gai check` |
 
+For a project outside this repository, `next` reads paths relative to the project
+instead of `game/`: a `.gd` there gives `script`, a file under `tests/` gives
+`check`, and anything else gives `check`.
+
 A file under `game/tests/` gives `check`, not `script`. A path that git reports
 as deleted gives `check` too, because a missing script cannot be compiled and the
 scenes that referenced it are what still needs a gate.
