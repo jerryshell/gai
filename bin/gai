@@ -894,21 +894,24 @@ def read_build_stamp(target: str, platform_name=None):
         return None
 
 
-def stamp_is_current(target: str, platform_name=None) -> bool:
+def stamp_state(target: str, platform_name=None) -> str:
+    """`current`, `stale`, or `absent` when this tree never wrote a stamp."""
     stamp = read_build_stamp(target, platform_name)
     if stamp is None:
-        return False
+        return "absent"
     current = engine_tree_stamp()
-    return stamp.get("tree") == current["tree"] and stamp.get("dirty") == current["dirty"]
+    if stamp.get("tree") == current["tree"] and stamp.get("dirty") == current["dirty"]:
+        return "current"
+    return "stale"
 
 
 def build_is_stale(engine, target: str = "editor", platform_name=None):
     newest = newest_engine_source()
     if engine is None or not engine.is_file():
         return True, newest
-    stamp = read_build_stamp(target, platform_name)
-    if stamp is not None:
-        return not stamp_is_current(target, platform_name), newest
+    state = stamp_state(target, platform_name)
+    if state != "absent":
+        return state == "stale", newest
     # No stamp yet: fall back to mtimes, which is all an older tree recorded.
     if newest is None:
         return False, None
@@ -1045,10 +1048,7 @@ def cmd_build(args) -> int:
             source = show_path(newest[0]) if newest else "unknown"
             print(f"build: stale ({source})")
             return 1
-        if not stamp_is_current(target, platform_name) and read_build_stamp(target, platform_name) is None:
-            print(f"build: up to date ({show_path(engine)} is newer than every source)")
-        else:
-            print("build: up to date")
+        print("build: up to date")
         return 0
 
     no_cache = getattr(args, "no_cache", False)

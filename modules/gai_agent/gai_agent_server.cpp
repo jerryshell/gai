@@ -419,7 +419,6 @@ void GaiAgentServer::start() {
 	if (audit.is_null()) {
 		print_error("gai_agent: cannot open the audit log at " + audit_file);
 	}
-	audit_path = audit_file;
 	print_line("GAI_AGENT_ROLE " + role);
 	tree->connect("process_frame", callable_mp(this, &GaiAgentServer::poll));
 	print_line("GAI_AGENT_LISTENING " + itos(port));
@@ -809,10 +808,6 @@ GaiAccess GaiAgentServer::_access_for_token(const String &p_token, bool &r_known
 	return GaiAccess::READ;
 }
 
-String GaiAgentServer::_access_name(GaiAccess p_access) const {
-	return gai_access_name(p_access);
-}
-
 GaiAccess GaiAgentServer::_access_from_name(const String &p_name, bool &r_ok) const {
 	r_ok = true;
 	if (p_name == "admin") {
@@ -849,6 +844,21 @@ void GaiAgentServer::_sweep_locks(uint64_t p_now) {
 	for (int id : expired) {
 		locks.erase(id);
 	}
+}
+
+GaiAgentServer::NodeLock *GaiAgentServer::_lock_for(const Dictionary &p_params, Dictionary &r_error) {
+	const int id = (int)p_params.get("lock", 0);
+	NodeLock *lock = locks.getptr(id);
+	if (lock == nullptr) {
+		r_error = _error("unknown lock");
+		return nullptr;
+	}
+	const String holder = String(p_params.get("holder", ""));
+	if (lock->holder != holder && request_access != GaiAccess::ADMIN) {
+		r_error = _error("that lock belongs to " + (lock->holder.is_empty() ? String("a guest") : lock->holder));
+		return nullptr;
+	}
+	return lock;
 }
 
 GaiAgentServer::NodeLock *GaiAgentServer::_blocking_lock(const String &p_path, const String &p_holder) {
@@ -919,11 +929,8 @@ bool GaiAgentServer::_role_allows(GaiAccess p_required, GaiAccess p_access) cons
 	}
 }
 
-Dictionary GaiAgentServer::_forbidden(const String &p_method, GaiAccess p_required) {
-	Dictionary error;
-	error["$gai_forbidden"] = vformat(
-			"%s needs the %s role; this request runs as %s", p_method, gai_access_name(p_required), caller_role);
-	return error;
+String GaiAgentServer::_forbidden(const String &p_method, GaiAccess p_required) {
+	return vformat("%s needs the %s role; this request runs as %s", p_method, gai_access_name(p_required), caller_role);
 }
 
 void GaiAgentServer::_audit(const Dictionary &p_request, const String &p_target, GaiAccess p_access, bool p_allowed) {
@@ -1069,7 +1076,7 @@ Variant GaiAgentServer::_process_request(const Dictionary &p_request, const Vari
 	const bool allowed = _role_allows(required, request_access);
 	_audit(p_request, target, required, allowed);
 	if (!allowed) {
-		return rpc.make_response_error(-32003, String(Dictionary(_forbidden(method, required))["$gai_forbidden"]), p_id);
+		return rpc.make_response_error(-32003, _forbidden(method, required), p_id);
 	}
 	if (required != GaiAccess::READ) {
 		const Variant raw_params = p_request.get("params", Variant());
@@ -1268,7 +1275,7 @@ Variant GaiAgentServer::_rpc_ping(const Variant &p_params) {
 	result["pong"] = true;
 	result["engine"] = String(VERSION_FULL_NAME);
 	result["role"] = role;
-	result["access"] = _access_name(request_access);
+	result["access"] = gai_access_name(request_access);
 	result["caller"] = caller_role;
 	Array available;
 	for (const RoleToken &entry : role_tokens) {
@@ -1349,16 +1356,12 @@ Variant GaiAgentServer::_rpc_lock_release(const Variant &p_params) {
 	if (p_params.get_type() != Variant::DICTIONARY) {
 		return _error("params must be an object");
 	}
-	const Dictionary params = p_params;
-	const int id = (int)params.get("lock", 0);
-	NodeLock *lock = locks.getptr(id);
+	Dictionary error;
+	NodeLock *lock = _lock_for(p_params, error);
 	if (lock == nullptr) {
-		return _error("unknown lock");
+		return error;
 	}
-	const String holder = String(params.get("holder", ""));
-	if (lock->holder != holder && request_access != GaiAccess::ADMIN) {
-		return _error("that lock belongs to " + (lock->holder.is_empty() ? String("a guest") : lock->holder));
-	}
+	const int id = lock->id;
 	locks.erase(id);
 	Dictionary result;
 	result["released"] = id;
@@ -1388,15 +1391,10 @@ Variant GaiAgentServer::_rpc_lock_renew(const Variant &p_params) {
 	if (p_params.get_type() != Variant::DICTIONARY) {
 		return _error("params must be an object");
 	}
-	const Dictionary params = p_params;
-	const int id = (int)params.get("lock", 0);
-	NodeLock *lock = locks.getptr(id);
+	Dictionary error;
+	NodeLock *lock = _lock_for(p_params, error);
 	if (lock == nullptr) {
-		return _error("unknown lock");
-	}
-	const String holder = String(params.get("holder", ""));
-	if (lock->holder != holder && request_access != GaiAccess::ADMIN) {
-		return _error("that lock belongs to " + (lock->holder.is_empty() ? String("a guest") : lock->holder));
+		return error;
 	}
 	lock->expires_ms = OS::get_singleton()->get_ticks_msec() + (uint64_t)lock_ttl_ms;
 	Dictionary result;

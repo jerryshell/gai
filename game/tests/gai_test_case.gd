@@ -220,11 +220,7 @@ func stub(object: Object, method_name: StringName, value: Variant, args: Variant
 	if object == null:
 		fail("stub: object is null")
 		return
-	var key := _double_key(object, method_name)
-	if not _double_stubs.has(key):
-		_double_stubs[key] = {}
-	var stubs: Dictionary = _double_stubs[key]
-	stubs["" if args == null else var_to_str(args)] = value
+	_slot(_double_stubs, object, method_name)[_args_key(args)] = value
 
 
 ## Answer a doubled method with each value in [param values] in turn, then keep
@@ -236,11 +232,7 @@ func stub_once(object: Object, method_name: StringName, values: Array, args: Var
 	if object == null:
 		fail("stub_once: object is null")
 		return
-	var key := _double_key(object, method_name)
-	if not _double_sequences.has(key):
-		_double_sequences[key] = {}
-	var sequences: Dictionary = _double_sequences[key]
-	sequences["" if args == null else var_to_str(args)] = values.duplicate()
+	_slot(_double_sequences, object, method_name)[_args_key(args)] = values.duplicate()
 
 
 ## Every recorded argument list for one method, in call order.
@@ -299,6 +291,19 @@ func _double_key(object: Object, method_name: StringName) -> String:
 	return "%d:%s" % [object.get_instance_id(), method_name]
 
 
+## The one place an argument list becomes a stub key.
+func _args_key(args: Variant) -> String:
+	return "" if args == null else var_to_str(args)
+
+
+## The stub or sequence table for one method, created on first use.
+func _slot(store: Dictionary, object: Object, method_name: StringName) -> Dictionary:
+	var key := _double_key(object, method_name)
+	if not store.has(key):
+		store[key] = {}
+	return store[key]
+
+
 func _gai_double_record(object: Object, method_name: StringName, args: Array) -> void:
 	var key := _double_key(object, method_name)
 	if not _double_calls.has(key):
@@ -314,7 +319,7 @@ func _gai_double_stub(object: Object, method_name: StringName, args: Array) -> D
 	if not _double_stubs.has(key):
 		return {"stubbed": false}
 	var stubs: Dictionary = _double_stubs[key]
-	var exact := var_to_str(args)
+	var exact := _args_key(args)
 	if stubs.has(exact):
 		return {"stubbed": true, "value": stubs[exact]}
 	if stubs.has(""):
@@ -326,7 +331,7 @@ func _next_sequence(key: String, args: Array) -> Dictionary:
 	if not _double_sequences.has(key):
 		return {}
 	var sequences: Dictionary = _double_sequences[key]
-	var exact := var_to_str(args)
+	var exact := _args_key(args)
 	var slot := ""
 	if sequences.has(exact):
 		slot = exact
