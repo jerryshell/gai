@@ -3128,7 +3128,11 @@ def cmd_mcp(args) -> int:
 
     try:
         connection = gai_mcp.BridgeConnection(
-            state["port"], agent_token(state, args.role), timeout=args.timeout
+            state["port"],
+            agent_token(state, args.role),
+            timeout=args.timeout,
+            holder=args.holder,
+            ceiling=args.ceiling,
         )
     except (OSError, ValueError) as exc:
         print(f"gai-mcp: cannot connect to the bridge: {exc}", file=sys.stderr)
@@ -4850,7 +4854,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--role",
         choices=("admin", "write", "read-only"),
         default="admin",
-        help="with --start, the bridge role to start (default: admin)",
+        help="the token to connect with (default: admin)",
+    )
+    mcp.add_argument(
+        "--holder",
+        default="",
+        help="lock holder name for this session; every request renews its locks",
+    )
+    mcp.add_argument(
+        "--ceiling",
+        choices=("admin", "write", "read-only"),
+        default="",
+        help="cap every request of this session at one role",
     )
     mcp.add_argument(
         "--timeout",

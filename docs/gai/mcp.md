@@ -81,6 +81,11 @@ guessing between one script, the game check, and a rebuild.
 in that session is bounded to reads. `--start` starts the bridge, and `--role`
 then also picks the ceiling.
 
+`--holder agent-a` puts a lock holder on every request, which renews that
+holder's locks and lets the session write inside its own claims.
+`--ceiling read-only` caps the session below its token, so an admin token can
+serve a review that cannot mutate.
+
 ## Events
 
 `gai_subscribe` keeps a subscription on the adapter's persistent bridge

@@ -23,10 +23,35 @@ SUPPORTED_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 MAX_READ_BYTES = 1024 * 1024
 
 
+def bridge_request(
+    request_id: int,
+    method: str,
+    params: dict[str, Any],
+    token: str,
+    holder: str = "",
+    ceiling: str = "",
+) -> dict[str, Any]:
+    """One JSON-RPC request. A holder renews its locks; a ceiling lowers the role."""
+    request: dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": params,
+        "token": token,
+    }
+    if holder:
+        request["holder"] = holder
+    if ceiling:
+        request["ceiling"] = ceiling
+    return request
+
+
 class BridgeConnection:
     """Persistent JSON-RPC connection to the local gai bridge."""
 
-    def __init__(self, port: int, token: str, timeout: float = 30.0) -> None:
+    def __init__(self, port: int, token: str, timeout: float = 30.0, holder: str = "", ceiling: str = "") -> None:
+        self.holder = holder
+        self.ceiling = ceiling
         self.sock = socket.create_connection(("127.0.0.1", int(port)), timeout=5)
         self.sock.settimeout(None)
         self.stream = self.sock.makefile("r", encoding="utf-8", newline="\n")
@@ -50,13 +75,7 @@ class BridgeConnection:
             self._next_id += 1
             waiter: dict[str, Any] = {"event": threading.Event(), "response": None}
             self._pending[request_id] = waiter
-        request = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params,
-            "token": self.token,
-        }
+        request = bridge_request(request_id, method, params, self.token, self.holder, self.ceiling)
         try:
             with self._send_lock:
                 self.sock.sendall((json.dumps(request, ensure_ascii=True) + "\n").encode("utf-8"))

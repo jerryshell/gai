@@ -38,6 +38,26 @@ type, exported properties, methods with arguments, signals, constants, and doc.
 Use it before you read a script, and to find the method you need to connect or
 override.
 
+## Lock a scene you are editing
+
+Two agents can edit the same scene through the bridge. Claim the node before a
+multi-step edit, and let the claim go when you are done.
+
+```sh
+bin/gai agent call lock.acquire '{"path":"/root/Main","holder":"me","note":"level pass"}' --holder me
+bin/gai agent call lock.list '{}'
+bin/gai agent call lock.release '{"lock":1,"holder":"me"}' --holder me
+```
+
+- Pass the same `--holder` on every write while you hold the lock. A write inside
+  someone else's lock returns `-32004` with their holder name.
+- Any request from your holder renews the lock, so it stays while you work and
+  expires about two minutes after you stop.
+- A lock covers the node and its children, including a write through a handle.
+  `object.call` is blocked by a covering lock even when it would only read.
+- An admin token may release a lock it does not hold. Do that only when the
+  holder is gone.
+
 ## Change a scene
 
 Scenes are text files. Read the scene before you edit it.

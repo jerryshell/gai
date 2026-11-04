@@ -118,7 +118,7 @@ name starts with `.`.
 | `render` | `screenshot` | Needs a display; headless returns an error. |
 | `event` | `subscribe`, `unsubscribe`, `list` | Signal subscriptions. A subscription needs a persistent connection. |
 | `client` | `list` | Connected clients, their role, subscriptions, and output backlog. |
-| `lock` | `acquire`, `release`, `list` | A node subtree is held by a holder name for a TTL. |
+| `lock` | `acquire`, `release`, `renew`, `list` | A node subtree is held by a holder name for a TTL. |
 
 Errors are JSON-RPC errors. A normal result dictionary that contains an `error`
 key is preserved and returned as data.
@@ -310,11 +310,19 @@ bin/gai agent call lock.release '{"lock":1,"holder":"agent-a"}' --holder agent-a
 - A lock lives until it is released or its TTL expires, which defaults to 120
   seconds and takes `ttl_ms` on acquire. A lock does not die with a connection,
   because `agent call` opens one connection per call.
+- Any request that carries `holder` renews every lock that holder owns, so a
+  working agent keeps its claim without a timer of its own. `lock.renew` does it
+  explicitly.
+- An admin token may release or renew a lock it does not hold, which is the way
+  back from a claim whose owner died. A `write` or `read-only` token gets
+  `-32003`-free refusal text naming the holder.
 - Acquiring a path twice with the same holder returns the same lock with
   `reused: true`, so a stateless client can acquire before every write.
 - `object.call` cannot be inspected, so any lock over the target node blocks it,
   including a call that would only read.
 - `lock.list` shows the holder, the path, the note, and the time left.
+- `bin/gai mcp --holder agent-a` renews that holder's locks with every request,
+  and `--ceiling read-only` caps the whole session.
   `client.list` shows the connected clients with their role and idle time, and
   `ping` counts the locks in the process.
 
@@ -369,14 +377,14 @@ client actually reached, so a passthrough is named:
 python3 tests/test_agent.py
 ```
 
-Eighteen tests: scene get/set and auth, capability surface, autoloads, editor mode,
+Nineteen tests: scene get/set and auth, capability surface, autoloads, editor mode,
 concurrent start, foreign PID safety, multi-client event delivery, event replay,
 and batch requests. `test_read_only_role_refuses_a_write`,
 `test_each_token_carries_its_own_role`, `test_admin_write_is_audited_and_a_read_is_not`,
 and `test_the_audit_line_names_a_passthrough_call` cover the role table and the
 audit log. `test_a_request_can_lower_its_own_ceiling`,
-`test_a_lock_blocks_another_holder`, and `test_a_lock_covers_a_write_through_a_handle`
-cover the ceiling and the locks. `test_script_reflection` covers `script.classes` and
+`test_a_lock_blocks_another_holder`, `test_a_holder_keeps_its_lock_alive`, and
+`test_a_lock_covers_a_write_through_a_handle` cover the ceiling and the locks. `test_script_reflection` covers `script.classes` and
 `script.class`. `test_crash_record_names_the_call` sends `SIGSEGV` during a
 blocking call and reads the record back. They need a source build. The `engine`
 CI job builds the engine and runs them. A local run needs a binary built from
