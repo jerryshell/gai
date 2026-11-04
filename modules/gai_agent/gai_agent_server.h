@@ -193,6 +193,7 @@ class GaiAgentServer : public Object {
 	Variant _rpc_lock_acquire(const Variant &p_params);
 	Variant _rpc_lock_release(const Variant &p_params);
 	Variant _rpc_lock_list(const Variant &p_params);
+	Variant _rpc_lock_renew(const Variant &p_params);
 
 	Object *_resolve_handle(const Variant &p_value);
 	String _handle(Object *p_object);
@@ -228,6 +229,7 @@ class GaiAgentServer : public Object {
 	String _role_name_for(GaiAccess p_access) const;
 	void _sweep_locks(uint64_t p_now);
 	NodeLock *_blocking_lock(const String &p_path, const String &p_holder);
+	int _renew_locks(const String &p_holder);
 	String _write_target(const String &p_method, const Dictionary &p_params) const;
 	String _access_name(GaiAccess p_access) const;
 	GaiAccess _required_access(const String &p_method) const;

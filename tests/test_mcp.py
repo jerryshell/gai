@@ -127,6 +127,15 @@ class McpTest(unittest.TestCase):
             {"name": name, "arguments": arguments},
         )
 
+    def test_a_request_carries_a_holder_and_a_ceiling(self):
+        request = gai_mcp.bridge_request(7, "node.set", {"path": "/root/Main"}, "tok", "agent-a", "read-only")
+        self.assertEqual(request["holder"], "agent-a")
+        self.assertEqual(request["ceiling"], "read-only")
+        self.assertEqual(request["id"], 7)
+
+        plain = gai_mcp.bridge_request(8, "ping", {}, "tok")
+        self.assertEqual(sorted(plain), ["id", "jsonrpc", "method", "params", "token"])
+
     def test_gai_next_returns_the_gate(self):
         runner = FakeRunner(
             check_output=json.dumps(

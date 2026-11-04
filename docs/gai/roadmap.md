@@ -101,9 +101,8 @@ the base without a release to justify them.
 Pi Pocket is shared. The bridge has roles and an audit log now; it still trusts
 every client that holds the token, and one role covers the whole process.
 
-- Wire locks into the agent skill and `bin/gai next` guidance, so an agent
-  acquires one before a scene edit without being told.
-- A lock that renews itself while the holder is active, instead of a fixed TTL.
+- A lock note that survives in `lock.list` after the holder restarts, so a
+  returning agent can tell its own stale claim from someone else's.
 - Presence and scene locks for concurrent agents.
 - Multiuser editor only if humans co-edit a scene. Take Blazium's lock,
   permission, CRDT, and file-sync design, not its 14k-line module blindly.

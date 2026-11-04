@@ -753,6 +753,31 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(self.rpc("lock.list")["count"], 0)
 
     @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_a_holder_keeps_its_lock_alive(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        lock = self.rpc("lock.acquire", {"path": "/root/Main", "holder": "agent-a", "ttl_ms": 1200})
+        first = self.rpc("lock.list")["locks"][0]["expires_in_ms"]
+        time.sleep(0.4)
+        # Any request from the holder renews what it holds.
+        self.rpc("scene.tree", extra={"holder": "agent-a"})
+        renewed = self.rpc("lock.list")["locks"][0]["expires_in_ms"]
+        self.assertGreater(renewed, first - 400)
+
+        explicit = self.rpc("lock.renew", {"lock": lock["lock"], "holder": "agent-a"})
+        self.assertEqual(explicit["lock"], lock["lock"])
+        self.assertGreater(explicit["expires_in_ms"], 60000)
+
+        foreign = self.request(
+            "lock.renew", {"lock": lock["lock"], "holder": "agent-b"}, token=self.state()["tokens"]["write"]
+        )
+        self.assertIn("belongs to agent-a", foreign["error"]["message"])
+
+        # An admin may break a stale claim; a locked-out holder needs a way back.
+        override = self.rpc("lock.release", {"lock": lock["lock"], "holder": "someone-else"})
+        self.assertEqual(override["released"], lock["lock"])
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
     def test_a_lock_covers_a_write_through_a_handle(self):
         start = self.run_gai("agent", "start")
         self.assertEqual(start.returncode, 0, start.stdout + start.stderr)

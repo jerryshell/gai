@@ -242,6 +242,7 @@ const GaiAccessRule GAI_ACCESS_RULES[] = {
 	{ "lock.list", GaiAccess::READ },
 	{ "lock.acquire", GaiAccess::WRITE },
 	{ "lock.release", GaiAccess::WRITE },
+	{ "lock.renew", GaiAccess::WRITE },
 	{ "object.set", GaiAccess::WRITE },
 	{ "object.call", GaiAccess::WRITE },
 	{ "object.free", GaiAccess::WRITE },
@@ -328,6 +329,7 @@ GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("lock.acquire", callable_mp(this, &GaiAgentServer::_rpc_lock_acquire));
 	rpc.set_method("lock.release", callable_mp(this, &GaiAgentServer::_rpc_lock_release));
 	rpc.set_method("lock.list", callable_mp(this, &GaiAgentServer::_rpc_lock_list));
+	rpc.set_method("lock.renew", callable_mp(this, &GaiAgentServer::_rpc_lock_renew));
 }
 
 GaiAgentServer::~GaiAgentServer() {
@@ -867,6 +869,21 @@ GaiAgentServer::NodeLock *GaiAgentServer::_blocking_lock(const String &p_path, c
 	return nullptr;
 }
 
+int GaiAgentServer::_renew_locks(const String &p_holder) {
+	if (p_holder.is_empty()) {
+		return 0;
+	}
+	const uint64_t now = OS::get_singleton()->get_ticks_msec();
+	int renewed = 0;
+	for (KeyValue<int, NodeLock> &entry : locks) {
+		if (entry.value.holder == p_holder) {
+			entry.value.expires_ms = now + (uint64_t)lock_ttl_ms;
+			renewed++;
+		}
+	}
+	return renewed;
+}
+
 String GaiAgentServer::_write_target(const String &p_method, const Dictionary &p_params) const {
 	if (p_method.begins_with("node.")) {
 		return String(p_params.get("path", ""));
@@ -1043,6 +1060,11 @@ Variant GaiAgentServer::_process_request(const Dictionary &p_request, const Vari
 		request_access = requested <= request_access ? requested : request_access;
 	}
 	caller_role = _role_name_for(request_access);
+	const Variant holder_value = p_request.get("holder", Variant());
+	const String request_holder = holder_value.get_type() == Variant::STRING ? String(holder_value) : String();
+	if (!request_holder.is_empty()) {
+		_renew_locks(request_holder);
+	}
 	const GaiAccess required = _required_access(method);
 	const bool allowed = _role_allows(required, request_access);
 	_audit(p_request, target, required, allowed);
@@ -1359,6 +1381,28 @@ Variant GaiAgentServer::_rpc_lock_list(const Variant &p_params) {
 	Dictionary result;
 	result["locks"] = out;
 	result["count"] = out.size();
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_lock_renew(const Variant &p_params) {
+	if (p_params.get_type() != Variant::DICTIONARY) {
+		return _error("params must be an object");
+	}
+	const Dictionary params = p_params;
+	const int id = (int)params.get("lock", 0);
+	NodeLock *lock = locks.getptr(id);
+	if (lock == nullptr) {
+		return _error("unknown lock");
+	}
+	const String holder = String(params.get("holder", ""));
+	if (lock->holder != holder && request_access != GaiAccess::ADMIN) {
+		return _error("that lock belongs to " + (lock->holder.is_empty() ? String("a guest") : lock->holder));
+	}
+	lock->expires_ms = OS::get_singleton()->get_ticks_msec() + (uint64_t)lock_ttl_ms;
+	Dictionary result;
+	result["lock"] = lock->id;
+	result["path"] = lock->path;
+	result["expires_in_ms"] = (int64_t)(lock->expires_ms - OS::get_singleton()->get_ticks_msec());
 	return result;
 }
 
