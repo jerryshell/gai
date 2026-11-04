@@ -117,7 +117,8 @@ name starts with `.`.
 | `input` | `action`, `key`, `mouse` | Injects input events. Guarded in editor mode. |
 | `render` | `screenshot` | Needs a display; headless returns an error. |
 | `event` | `subscribe`, `unsubscribe`, `list` | Signal subscriptions. A subscription needs a persistent connection. |
-| `client` | `list` | Connected clients, their subscriptions, and their output backlog. |
+| `client` | `list` | Connected clients, their role, subscriptions, and output backlog. |
+| `lock` | `acquire`, `release`, `list` | A node subtree is held by a holder name for a TTL. |
 
 Errors are JSON-RPC errors. A normal result dictionary that contains an `error`
 key is preserved and returned as data.
@@ -276,6 +277,10 @@ capped at it, and a bridge started read-only cannot be raised by any token.
 | `write` | Every read method plus the mutating ones: `object.set/call/free`, `node.set/create/delete/reparent/add_child`, `resource.save`, `project.set/save`, `run.pause/resume/step/time_scale`, `input.*`, `render.screenshot`. |
 | `admin` | Everything, including `scene.change`, `run.quit`, and any method the table does not name. |
 
+A request can lower its own ceiling with a `ceiling` field, which a client uses
+to promise it will not mutate even while it holds an admin token. Raising is not
+a request, only a lowering. `--ceiling` on `agent call` sets it.
+
 One table in `modules/gai_agent/gai_agent_server.cpp` decides, and a method that
 is not in it needs an admin. A new method is therefore closed until someone
 classifies it. A refused call returns JSON-RPC error `-32003` and names the role
@@ -284,6 +289,34 @@ the method needs and the role the token carries.
 `object.call` is one entry, so a write role can reach any method through it,
 including `OS.execute`. The role bounds the bridge surface, not the engine. A
 read-only bridge is the only role that cannot mutate at all.
+
+## Locks and presence
+
+Two agents on one scene overwrote each other in silence. A lock is a claim on a
+node and its whole subtree, held by a name the caller chooses:
+
+```sh
+bin/gai agent call lock.acquire '{"path":"/root/Main","holder":"agent-a","note":"level pass"}' --holder agent-a
+bin/gai agent call lock.list '{}'
+bin/gai agent call lock.release '{"lock":1,"holder":"agent-a"}' --holder agent-a
+```
+
+- A path-addressed write (`node.set`, `node.create`, `node.delete`,
+  `node.reparent`, `node.add_child`) and a write on a node handle (`object.set`,
+  `object.call`, `object.free`) inside a held subtree returns `-32004` and names
+  the holder.
+- A request carries its holder as `"holder"`. A request with no holder is a
+  guest and is blocked by every lock. `--holder` on `agent call` sets it.
+- A lock lives until it is released or its TTL expires, which defaults to 120
+  seconds and takes `ttl_ms` on acquire. A lock does not die with a connection,
+  because `agent call` opens one connection per call.
+- Acquiring a path twice with the same holder returns the same lock with
+  `reused: true`, so a stateless client can acquire before every write.
+- `object.call` cannot be inspected, so any lock over the target node blocks it,
+  including a call that would only read.
+- `lock.list` shows the holder, the path, the note, and the time left.
+  `client.list` shows the connected clients with their role and idle time, and
+  `ping` counts the locks in the process.
 
 ## Audit log
 
@@ -336,12 +369,14 @@ client actually reached, so a passthrough is named:
 python3 tests/test_agent.py
 ```
 
-Fifteen tests: scene get/set and auth, capability surface, autoloads, editor mode,
+Eighteen tests: scene get/set and auth, capability surface, autoloads, editor mode,
 concurrent start, foreign PID safety, multi-client event delivery, event replay,
 and batch requests. `test_read_only_role_refuses_a_write`,
 `test_each_token_carries_its_own_role`, `test_admin_write_is_audited_and_a_read_is_not`,
 and `test_the_audit_line_names_a_passthrough_call` cover the role table and the
-audit log. `test_script_reflection` covers `script.classes` and
+audit log. `test_a_request_can_lower_its_own_ceiling`,
+`test_a_lock_blocks_another_holder`, and `test_a_lock_covers_a_write_through_a_handle`
+cover the ceiling and the locks. `test_script_reflection` covers `script.classes` and
 `script.class`. `test_crash_record_names_the_call` sends `SIGSEGV` during a
 blocking call and reads the record back. They need a source build. The `engine`
 CI job builds the engine and runs them. A local run needs a binary built from

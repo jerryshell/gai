@@ -53,6 +53,9 @@ releases.
   the outcome, and the effect of a passthrough `object.call`.
 - `bin/gai build` answers `--check` from content, not mtimes, and `--objects`
   compiles one source for a target so a template-only break shows up locally.
+- A request can lower its own ceiling, and node locks with a holder name stop two
+  agents from overwriting one scene: `lock.acquire`, `lock.release`, `lock.list`,
+  with `-32004` for a write inside someone else's lock.
 
 ## P0: close the agent protocol
 
@@ -98,10 +101,9 @@ the base without a release to justify them.
 Pi Pocket is shared. The bridge has roles and an audit log now; it still trusts
 every client that holds the token, and one role covers the whole process.
 
-- A per-connection *ceiling* that a client can ask to be lower than its token,
-  so one connection can volunteer to be harmless.
-- Presence and scene locks, so two writers on one scene cannot overwrite each
-  other in silence.
+- Wire locks into the agent skill and `bin/gai next` guidance, so an agent
+  acquires one before a scene edit without being told.
+- A lock that renews itself while the holder is active, instead of a fixed TTL.
 - Presence and scene locks for concurrent agents.
 - Multiuser editor only if humans co-edit a scene. Take Blazium's lock,
   permission, CRDT, and file-sync design, not its 14k-line module blindly.

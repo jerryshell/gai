@@ -561,19 +561,20 @@ class AgentTest(unittest.TestCase):
     def state(self):
         return json.loads((self.tmp / ".gai" / "agent.json").read_text(encoding="utf-8"))
 
-    def request(self, method: str, params=None, token=None):
+    def request(self, method: str, params=None, token=None, extra=None):
         state = self.state()
-        payload = json.dumps({
+        message = {
             "jsonrpc": "2.0",
             "id": 1,
             "method": method,
             "params": params or {},
             "token": token or state["token"],
-        })
-        return self.raw(payload + "\n")
+        }
+        message.update(extra or {})
+        return self.raw(json.dumps(message) + "\n")
 
-    def rpc(self, method: str, params=None, token=None):
-        response = self.request(method, params, token)
+    def rpc(self, method: str, params=None, token=None, extra=None):
+        response = self.request(method, params, token, extra)
         if "error" in response:
             raise AssertionError(response["error"])
         return response["result"]
@@ -681,6 +682,87 @@ class AgentTest(unittest.TestCase):
 
         unknown = self.request("ping", token="not-a-token")
         self.assertEqual(unknown["error"]["code"], -32001)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_a_request_can_lower_its_own_ceiling(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+
+        capped = self.rpc("ping", extra={"ceiling": "read-only"})
+        self.assertEqual(capped["access"], "read")
+        self.assertEqual(capped["caller"], "read-only")
+
+        denied = self.request(
+            "node.set", {"path": "/root/Main", "property": "visible", "value": False}, extra={"ceiling": "read-only"}
+        )
+        self.assertEqual(denied["error"]["code"], -32003)
+        self.assertIn("runs as read-only", denied["error"]["message"])
+
+        bad = self.request("ping", extra={"ceiling": "god"})
+        self.assertEqual(bad["error"]["code"], -32602)
+        self.assertIn("admin, write, or read-only", bad["error"]["message"])
+
+        # A ceiling cannot raise a token: the read-only token stays read-only.
+        raised = self.request(
+            "node.set",
+            {"path": "/root/Main", "property": "visible", "value": False},
+            token=self.state()["tokens"]["read-only"],
+            extra={"ceiling": "admin"},
+        )
+        self.assertEqual(raised["error"]["code"], -32003)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_a_lock_blocks_another_holder(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+
+        lock = self.rpc("lock.acquire", {"path": "/root/Main", "holder": "agent-a", "note": "editing"})
+        self.assertEqual(lock["path"], "/root/Main")
+        self.assertGreater(lock["lock"], 0)
+
+        reused = self.rpc("lock.acquire", {"path": "/root/Main", "holder": "agent-a"})
+        self.assertTrue(reused["reused"])
+        self.assertEqual(reused["lock"], lock["lock"])
+
+        other = self.request(
+            "node.set",
+            {"path": "/root/Main/Title", "property": "visible", "value": False, "holder": "agent-b"},
+        )
+        self.assertEqual(other["error"]["code"], -32004)
+        self.assertIn("agent-a", other["error"]["message"])
+
+        guest = self.request("node.set", {"path": "/root/Main/Title", "property": "visible", "value": False})
+        self.assertEqual(guest["error"]["code"], -32004)
+
+        mine = self.rpc(
+            "node.set",
+            {"path": "/root/Main/Title", "property": "visible", "value": False, "holder": "agent-a"},
+        )
+        self.assertFalse(mine["value"])
+
+        listed = self.rpc("lock.list")
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual(listed["locks"][0]["holder"], "agent-a")
+
+        self.rpc("lock.release", {"lock": lock["lock"], "holder": "agent-a"})
+        after = self.rpc(
+            "node.set",
+            {"path": "/root/Main/Title", "property": "visible", "value": True, "holder": "agent-b"},
+        )
+        self.assertTrue(after["value"])
+        self.assertEqual(self.rpc("lock.list")["count"], 0)
+
+    @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
+    def test_a_lock_covers_a_write_through_a_handle(self):
+        start = self.run_gai("agent", "start")
+        self.assertEqual(start.returncode, 0, start.stdout + start.stderr)
+        main = self.rpc("scene.tree")["root"]
+        lock = self.rpc("lock.acquire", {"handle": main["handle"], "holder": "agent-a"})
+        self.assertEqual(lock["path"], "/root/Main")
+        blocked = self.request(
+            "object.call", {"handle": main["handle"], "method": "get_child_count", "holder": "agent-b"}
+        )
+        self.assertEqual(blocked["error"]["code"], -32004)
 
     @unittest.skipUnless(ENGINE, "no source build with the agent bridge")
     def test_the_audit_line_names_a_passthrough_call(self):
