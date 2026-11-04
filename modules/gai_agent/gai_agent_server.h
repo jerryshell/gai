@@ -132,7 +132,6 @@ class GaiAgentServer : public Object {
 	HashMap<int, NodeLock> locks;
 	int next_lock_id = 1;
 	int lock_ttl_ms = 120000;
-	String audit_path;
 	Ref<FileAccess> audit;
 	int port = 0;
 	SceneTree *tree = nullptr;
@@ -229,12 +228,12 @@ class GaiAgentServer : public Object {
 	String _role_name_for(GaiAccess p_access) const;
 	void _sweep_locks(uint64_t p_now);
 	NodeLock *_blocking_lock(const String &p_path, const String &p_holder);
+	NodeLock *_lock_for(const Dictionary &p_params, Dictionary &r_error);
 	int _renew_locks(const String &p_holder);
 	String _write_target(const String &p_method, const Dictionary &p_params) const;
-	String _access_name(GaiAccess p_access) const;
 	GaiAccess _required_access(const String &p_method) const;
 	bool _role_allows(GaiAccess p_required, GaiAccess p_access) const;
-	Dictionary _forbidden(const String &p_method, GaiAccess p_required);
+	String _forbidden(const String &p_method, GaiAccess p_required);
 	void _audit(const Dictionary &p_request, const String &p_target, GaiAccess p_access, bool p_allowed);
 
 	Script *_load_script(const String &p_path, uint64_t &r_mtime, bool &r_cached);
