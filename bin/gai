@@ -2449,12 +2449,38 @@ def normalize_path(path: str) -> str:
     return text
 
 
+def game_relative(path: str) -> str:
+    """The path relative to the game project, when it is inside one.
+
+    A game outside this repository has no `game/` prefix, so the table alone
+    would send every script edit to the full check.
+    """
+    if GAME_SOURCE == "bundled starter game":
+        return ""
+    for candidate in (Path(path), Path.cwd() / path, GAME_DIR / path):
+        try:
+            relative = candidate.resolve().relative_to(GAME_DIR.resolve())
+        except (ValueError, OSError):
+            continue
+        return relative.as_posix()
+    return ""
+
+
 def next_rule(path: str):
     """Return the first table rule that matches a path, as (gate, pattern)."""
     candidates = [path]
     if path.endswith("/"):
         # `git status` reports a whole new folder, not its files: probe inside it.
         candidates.append(path.rstrip("/") + "/_")
+    for candidate in candidates:
+        relative = game_relative(candidate)
+        if not relative:
+            continue
+        if relative.startswith("tests/"):
+            return "check", "<game>/tests/**"
+        if relative.endswith(".gd"):
+            return "script", "<game>/**/*.gd"
+        return "check", "<game>/**"
     for candidate in candidates:
         for regex, gate, pattern in NEXT_COMPILED:
             if regex.match(candidate):
@@ -2494,7 +2520,7 @@ def res_path(path: str) -> str:
         return path
     candidate = Path(path)
     if not candidate.is_absolute():
-        candidate = ROOT / path
+        candidate = GAME_DIR / path if (GAME_DIR / path).exists() else ROOT / path
     try:
         return "res://" + candidate.resolve().relative_to(GAME_DIR.resolve()).as_posix()
     except (ValueError, OSError):

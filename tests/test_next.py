@@ -2,6 +2,7 @@
 """Tests for bin/gai next. These do not need SCons or an engine."""
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -26,14 +27,45 @@ class NextTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def run_gai(self, *args):
+    def run_gai(self, *args, env=None):
         return subprocess.run(
             [sys.executable, str(self.tmp / "bin" / "gai"), *args],
             cwd=str(self.tmp),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
         )
+
+    def external_game(self):
+        """A project outside the repository, the way GAI_GAME points at one."""
+        project = self.tmp / "external"
+        (project / "components").mkdir(parents=True)
+        (project / "tests").mkdir()
+        (project / "project.godot").write_text("config_version=5\n", encoding="utf-8")
+        for path in ("components/ability.gd", "components/scene.tscn", "tests/p0_test.gd"):
+            (project / path).write_text("extends Node\n", encoding="utf-8")
+        env = dict(os.environ)
+        env["GAI_GAME"] = str(project)
+        return project, env
+
+    def test_external_project_scripts_use_the_script_gate(self):
+        project, env = self.external_game()
+        result = self.run_gai("next", "--json", str(project / "components" / "ability.gd"), env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["gate"], "script")
+        self.assertEqual(payload["reasons"][0]["rule"], "<game>/**/*.gd")
+        self.assertEqual(
+            payload["command"],
+            "bin/gai check --script res://components/ability.gd --no-run",
+        )
+
+        relative = self.run_gai("next", "--json", "components/scene.tscn", env=env)
+        self.assertEqual(json.loads(relative.stdout)["gate"], "check")
+
+        tests = self.run_gai("next", "--json", "tests/p0_test.gd", env=env)
+        self.assertEqual(json.loads(tests.stdout)["reasons"][0]["rule"], "<game>/tests/**")
 
     def gate(self, *paths):
         result = self.run_gai("next", *paths)
