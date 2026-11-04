@@ -239,6 +239,9 @@ const GaiAccessRule GAI_ACCESS_RULES[] = {
 	{ "event.unsubscribe", GaiAccess::READ },
 	{ "event.list", GaiAccess::READ },
 	{ "client.list", GaiAccess::READ },
+	{ "lock.list", GaiAccess::READ },
+	{ "lock.acquire", GaiAccess::WRITE },
+	{ "lock.release", GaiAccess::WRITE },
 	{ "object.set", GaiAccess::WRITE },
 	{ "object.call", GaiAccess::WRITE },
 	{ "object.free", GaiAccess::WRITE },
@@ -322,6 +325,9 @@ GaiAgentServer::GaiAgentServer() {
 	rpc.set_method("event.unsubscribe", callable_mp(this, &GaiAgentServer::_rpc_event_unsubscribe));
 	rpc.set_method("event.list", callable_mp(this, &GaiAgentServer::_rpc_event_list));
 	rpc.set_method("client.list", callable_mp(this, &GaiAgentServer::_rpc_client_list));
+	rpc.set_method("lock.acquire", callable_mp(this, &GaiAgentServer::_rpc_lock_acquire));
+	rpc.set_method("lock.release", callable_mp(this, &GaiAgentServer::_rpc_lock_release));
+	rpc.set_method("lock.list", callable_mp(this, &GaiAgentServer::_rpc_lock_list));
 }
 
 GaiAgentServer::~GaiAgentServer() {
@@ -805,6 +811,75 @@ String GaiAgentServer::_access_name(GaiAccess p_access) const {
 	return gai_access_name(p_access);
 }
 
+GaiAccess GaiAgentServer::_access_from_name(const String &p_name, bool &r_ok) const {
+	r_ok = true;
+	if (p_name == "admin") {
+		return GaiAccess::ADMIN;
+	}
+	if (p_name == "write") {
+		return GaiAccess::WRITE;
+	}
+	if (p_name == "read-only") {
+		return GaiAccess::READ;
+	}
+	r_ok = false;
+	return GaiAccess::READ;
+}
+
+String GaiAgentServer::_role_name_for(GaiAccess p_access) const {
+	switch (p_access) {
+		case GaiAccess::READ:
+			return "read-only";
+		case GaiAccess::WRITE:
+			return "write";
+		default:
+			return "admin";
+	}
+}
+
+void GaiAgentServer::_sweep_locks(uint64_t p_now) {
+	Vector<int> expired;
+	for (const KeyValue<int, NodeLock> &entry : locks) {
+		if (entry.value.expires_ms <= p_now) {
+			expired.push_back(entry.key);
+		}
+	}
+	for (int id : expired) {
+		locks.erase(id);
+	}
+}
+
+GaiAgentServer::NodeLock *GaiAgentServer::_blocking_lock(const String &p_path, const String &p_holder) {
+	if (p_path.is_empty()) {
+		return nullptr;
+	}
+	for (KeyValue<int, NodeLock> &entry : locks) {
+		NodeLock &lock = entry.value;
+		if (!lock.holder.is_empty() && lock.holder == p_holder) {
+			continue;
+		}
+		// A lock covers its node and everything under it, so a write to a
+		// descendant is a conflict and a write to an ancestor is not.
+		if (p_path == lock.path || p_path.begins_with(lock.path + "/")) {
+			return &lock;
+		}
+	}
+	return nullptr;
+}
+
+String GaiAgentServer::_write_target(const String &p_method, const Dictionary &p_params) const {
+	if (p_method.begins_with("node.")) {
+		return String(p_params.get("path", ""));
+	}
+	if (p_method == "object.set" || p_method == "object.call" || p_method == "object.free") {
+		Object *object = const_cast<GaiAgentServer *>(this)->_resolve_handle(p_params.get("handle", Variant()));
+		if (Node *node = Object::cast_to<Node>(object)) {
+			return String(node->get_path());
+		}
+	}
+	return "";
+}
+
 GaiAccess GaiAgentServer::_required_access(const String &p_method) const {
 	// One table decides what a role may call. An unlisted method needs an admin,
 	// so a new method is closed until someone classifies it.
@@ -830,7 +905,7 @@ bool GaiAgentServer::_role_allows(GaiAccess p_required, GaiAccess p_access) cons
 Dictionary GaiAgentServer::_forbidden(const String &p_method, GaiAccess p_required) {
 	Dictionary error;
 	error["$gai_forbidden"] = vformat(
-			"%s needs the %s role; this token carries %s", p_method, gai_access_name(p_required), caller_role);
+			"%s needs the %s role; this request runs as %s", p_method, gai_access_name(p_required), caller_role);
 	return error;
 }
 
@@ -957,12 +1032,34 @@ Variant GaiAgentServer::_process_request(const Dictionary &p_request, const Vari
 	// The token carries a role, and the process ceiling caps it: a bridge started
 	// with --role read-only cannot be raised by any token.
 	request_access = token_access <= role_access ? token_access : role_access;
-	caller_role = token_access <= role_access ? token_role : role;
+	const Variant ceiling_value = p_request.get("ceiling", Variant());
+	if (ceiling_value.get_type() != Variant::NIL) {
+		bool ceiling_ok = false;
+		const GaiAccess requested = _access_from_name(String(ceiling_value), ceiling_ok);
+		if (!ceiling_ok) {
+			return rpc.make_response_error(JSONRPC::INVALID_PARAMS, "ceiling must be admin, write, or read-only", p_id);
+		}
+		// A request can only lower what it may do. Raising it is not a request.
+		request_access = requested <= request_access ? requested : request_access;
+	}
+	caller_role = _role_name_for(request_access);
 	const GaiAccess required = _required_access(method);
 	const bool allowed = _role_allows(required, request_access);
 	_audit(p_request, target, required, allowed);
 	if (!allowed) {
 		return rpc.make_response_error(-32003, String(Dictionary(_forbidden(method, required))["$gai_forbidden"]), p_id);
+	}
+	if (required != GaiAccess::READ) {
+		const Variant raw_params = p_request.get("params", Variant());
+		if (raw_params.get_type() == Variant::DICTIONARY) {
+			_sweep_locks(OS::get_singleton()->get_ticks_msec());
+			const String target_path = _write_target(method, raw_params);
+			const String holder = String(Dictionary(raw_params).get("holder", ""));
+			if (NodeLock *blocking = _blocking_lock(target_path, holder)) {
+				return rpc.make_response_error(
+						-32004, vformat("%s is locked by %s", target_path, blocking->holder), p_id);
+			}
+		}
 	}
 	_arm_crash_record(method, target);
 	const Variant response = rpc.process_action(p_request);
@@ -1158,9 +1255,110 @@ Variant GaiAgentServer::_rpc_ping(const Variant &p_params) {
 	result["roles"] = available;
 	result["pid"] = OS::get_singleton()->get_process_id();
 	result["clients"] = clients.size();
+	result["locks"] = locks.size();
 	if (current_client != nullptr) {
 		result["client"] = current_client->id;
 	}
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_lock_acquire(const Variant &p_params) {
+	if (p_params.get_type() != Variant::DICTIONARY) {
+		return _error("params must be an object");
+	}
+	if (current_client == nullptr) {
+		return _error("no client");
+	}
+	const Dictionary params = p_params;
+	String path = String(params.get("path", ""));
+	if (path.is_empty() && params.has("handle")) {
+		Object *object = _resolve_handle(params["handle"]);
+		if (Node *node = Object::cast_to<Node>(object)) {
+			path = String(node->get_path());
+		}
+	}
+	if (path.is_empty()) {
+		return _error("path or handle is required");
+	}
+	if (path == "/" || path == "/root") {
+		return _error("lock a scene node, not the whole tree");
+	}
+	const String holder = String(params.get("holder", ""));
+	_sweep_locks(OS::get_singleton()->get_ticks_msec());
+	NodeLock *blocking = _blocking_lock(path, holder);
+	if (blocking != nullptr) {
+		Dictionary error;
+		error["$gai_locked"] = vformat("%s is locked by %s", blocking->path, blocking->holder);
+		return error;
+	}
+	// Asking twice with the same holder keeps the lock it already has, so a
+	// stateless client can call acquire on every write.
+	for (KeyValue<int, NodeLock> &entry : locks) {
+		if (entry.value.path == path && entry.value.holder == holder) {
+			NodeLock &existing = entry.value;
+			Dictionary result;
+			result["lock"] = existing.id;
+			result["path"] = existing.path;
+			result["holder"] = existing.holder;
+			result["note"] = existing.note;
+			result["expires_in_ms"] = (int64_t)(existing.expires_ms - OS::get_singleton()->get_ticks_msec());
+			result["reused"] = true;
+			return result;
+		}
+	}
+	const int ttl = (int)params.get("ttl_ms", lock_ttl_ms);
+	NodeLock lock;
+	lock.id = next_lock_id++;
+	lock.holder = holder;
+	lock.path = path;
+	lock.note = String(params.get("note", ""));
+	lock.expires_ms = OS::get_singleton()->get_ticks_msec() + (uint64_t)MAX(ttl, 1000);
+	locks[lock.id] = lock;
+	Dictionary result;
+	result["lock"] = lock.id;
+	result["path"] = lock.path;
+	result["holder"] = lock.holder;
+	result["note"] = lock.note;
+	result["ttl_ms"] = MAX(ttl, 1000);
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_lock_release(const Variant &p_params) {
+	if (p_params.get_type() != Variant::DICTIONARY) {
+		return _error("params must be an object");
+	}
+	const Dictionary params = p_params;
+	const int id = (int)params.get("lock", 0);
+	NodeLock *lock = locks.getptr(id);
+	if (lock == nullptr) {
+		return _error("unknown lock");
+	}
+	const String holder = String(params.get("holder", ""));
+	if (lock->holder != holder && request_access != GaiAccess::ADMIN) {
+		return _error("that lock belongs to " + (lock->holder.is_empty() ? String("a guest") : lock->holder));
+	}
+	locks.erase(id);
+	Dictionary result;
+	result["released"] = id;
+	return result;
+}
+
+Variant GaiAgentServer::_rpc_lock_list(const Variant &p_params) {
+	(void)p_params;
+	_sweep_locks(OS::get_singleton()->get_ticks_msec());
+	Array out;
+	for (const KeyValue<int, NodeLock> &entry : locks) {
+		Dictionary item;
+		item["lock"] = entry.value.id;
+		item["path"] = entry.value.path;
+		item["holder"] = entry.value.holder;
+		item["note"] = entry.value.note;
+		item["expires_in_ms"] = (int64_t)(entry.value.expires_ms - OS::get_singleton()->get_ticks_msec());
+		out.push_back(item);
+	}
+	Dictionary result;
+	result["locks"] = out;
+	result["count"] = out.size();
 	return result;
 }
 

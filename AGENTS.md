@@ -50,7 +50,7 @@ Run these from the repository root.
 | `bin/gai test` | Runs `game/tests` headlessly. `--scene-dir res://tests` runs existing `.tscn` test scenes. `check` runs the harness by default. |
 | `bin/gai run -- <args>` | Runs the game. Add `--headless` for a test run without a window. |
 | `bin/gai editor` | Opens the editor. A human uses this command. |
-| `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. One token per role; `--role read-only` caps the process and `agent call --role read-only` sends the read-only token. Every mutating call appends to `.gai/logs/audit.jsonl`. |
+| `bin/gai agent start` | Starts the headless game with the live scene bridge. Requires a source build. One token per role; `--role read-only` caps the process and `agent call --role read-only` sends the read-only token. `--ceiling` lowers one call, and `--holder` claims a node lock. Every mutating call appends to `.gai/logs/audit.jsonl`. |
 | `bin/gai agent watch` | Streams signal events from the bridge; pass `--path` or `--handle` and `--signal`. |
 | `bin/gai mcp` | Serves the running bridge over MCP stdio. Add `--start` to start the game. |
 | `bin/gai export web` | Exports a web build. Needs a `Web` preset and export templates. |

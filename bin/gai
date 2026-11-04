@@ -2631,7 +2631,7 @@ def agent_pid_alive(pid: int) -> bool:
     return True
 
 
-def agent_call(state: dict, method: str, params=None, timeout: float = 5.0, role: str = "admin"):
+def agent_call(state: dict, method: str, params=None, timeout: float = 5.0, role: str = "admin", ceiling: str = ""):
     request = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -2639,6 +2639,8 @@ def agent_call(state: dict, method: str, params=None, timeout: float = 5.0, role
         "params": params or {},
         "token": agent_token(state, role),
     }
+    if ceiling:
+        request["ceiling"] = ceiling
     try:
         with socket.create_connection(("127.0.0.1", int(state["port"])), timeout=timeout) as sock:
             sock.settimeout(timeout)
@@ -2695,14 +2697,14 @@ def dead_agent_message() -> str:
     return message
 
 
-def agent_result(method: str, params=None, role: str = "admin"):
+def agent_result(method: str, params=None, role: str = "admin", ceiling: str = ""):
     state = agent_state()
     if state is None:
         die("no agent is running. Run `bin/gai agent start` first.")
     if not agent_pid_alive(int(state.get("pid", 0))):
         die(dead_agent_message())
     try:
-        result = agent_call(state, method, params, role=role)
+        result = agent_call(state, method, params, role=role, ceiling=ceiling)
     except (OSError, RuntimeError, ValueError) as exc:
         die(f"agent: {exc}")
     return result
@@ -2980,7 +2982,15 @@ def cmd_agent_call(args) -> int:
         params = json.loads(args.params)
     except json.JSONDecodeError as exc:
         die(f"params must be JSON: {exc}")
-    print(json.dumps(agent_result(args.method, params, role=args.role), indent=2, ensure_ascii=False))
+    if isinstance(params, dict):
+        if getattr(args, "holder", ""):
+            params.setdefault("holder", args.holder)
+        if getattr(args, "ceiling", ""):
+            params = dict(params)
+    result = agent_result(
+        args.method, params, role=args.role, ceiling=getattr(args, "ceiling", "")
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -4788,6 +4798,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("admin", "write", "read-only"),
         default="admin",
         help="send the token for this role (default: admin)",
+    )
+    agent_call.add_argument(
+        "--ceiling",
+        choices=("admin", "write", "read-only"),
+        default="",
+        help="ask the bridge to cap this call at one role",
+    )
+    agent_call.add_argument(
+        "--holder",
+        default="",
+        help="lock holder name, so a lock this call takes or finds is yours",
     )
     agent_call.set_defaults(func=cmd_agent_call)
     agent_methods = agent_sub.add_parser("methods", help="list bridge methods")

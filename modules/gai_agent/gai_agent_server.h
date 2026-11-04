@@ -114,6 +114,14 @@ class GaiAgentServer : public Object {
 	String role = "admin";
 	GaiAccess role_access = GaiAccess::ADMIN;
 	GaiAccess request_access = GaiAccess::ADMIN;
+	struct NodeLock {
+		int id = 0;
+		String holder;
+		String path;
+		String note;
+		uint64_t expires_ms = 0;
+	};
+
 	struct RoleToken {
 		String name;
 		String token;
@@ -121,6 +129,9 @@ class GaiAgentServer : public Object {
 	};
 	Vector<RoleToken> role_tokens;
 	String caller_role = "admin";
+	HashMap<int, NodeLock> locks;
+	int next_lock_id = 1;
+	int lock_ttl_ms = 120000;
 	String audit_path;
 	Ref<FileAccess> audit;
 	int port = 0;
@@ -179,6 +190,9 @@ class GaiAgentServer : public Object {
 	Variant _rpc_event_unsubscribe(const Variant &p_params);
 	Variant _rpc_event_list(const Variant &p_params);
 	Variant _rpc_client_list(const Variant &p_params);
+	Variant _rpc_lock_acquire(const Variant &p_params);
+	Variant _rpc_lock_release(const Variant &p_params);
+	Variant _rpc_lock_list(const Variant &p_params);
 
 	Object *_resolve_handle(const Variant &p_value);
 	String _handle(Object *p_object);
@@ -210,6 +224,11 @@ class GaiAgentServer : public Object {
 	void _queue_event(const String &p_binding_key, const Array &p_args);
 
 	GaiAccess _access_for_token(const String &p_token, bool &r_known, String &r_name) const;
+	GaiAccess _access_from_name(const String &p_name, bool &r_ok) const;
+	String _role_name_for(GaiAccess p_access) const;
+	void _sweep_locks(uint64_t p_now);
+	NodeLock *_blocking_lock(const String &p_path, const String &p_holder);
+	String _write_target(const String &p_method, const Dictionary &p_params) const;
 	String _access_name(GaiAccess p_access) const;
 	GaiAccess _required_access(const String &p_method) const;
 	bool _role_allows(GaiAccess p_required, GaiAccess p_access) const;
