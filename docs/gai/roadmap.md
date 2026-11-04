@@ -54,8 +54,10 @@ releases.
 - `bin/gai build` answers `--check` from content, not mtimes, and `--objects`
   compiles one source for a target so a template-only break shows up locally.
 - A request can lower its own ceiling, and node locks with a holder name stop two
-  agents from overwriting one scene: `lock.acquire`, `lock.release`, `lock.list`,
-  with `-32004` for a write inside someone else's lock.
+  agents from overwriting one scene: `lock.acquire`, `lock.release`, `lock.renew`,
+  `lock.list`, with `-32004` for a write inside someone else's lock.
+- `stub_once` answers in turn, and a double of a subclass overrides inherited
+  methods, so the harness stops asking for a wrapper script per fixture.
 
 ## P0: close the agent protocol
 
@@ -75,9 +77,8 @@ Done. The harness writes JUnit XML, doubles scripts and scenes, isolates test
 files, and isolates each test method with a timeout. A hung test now fails in
 bounded time without losing the rest of its file.
 
-Remaining optional work: more stub signatures, inherited-method doubles, and
-the Autowork decision if native `ClassDB` assertions or the E2E server are
-needed.
+Remaining optional work: the Autowork decision if native `ClassDB` assertions or
+the E2E server are needed.
 
 ## Deferred: upstream 4.8
 
@@ -173,7 +174,8 @@ engine source.
 
 ## Next three tasks
 
-1. Multi-agent roles: read-only, write, and admin sessions, with an audit log.
-2. Dogfood the new path on nova-survivors-gai: scene tests in CI, native export,
-   and template rebuild after engine changes.
-3. Test maturity leftovers: more stub signatures and inherited-method doubles.
+1. Dogfood the new path on nova-survivors-gai: scene tests in CI, native export,
+   and template rebuild after engine changes. Needs that project to be present.
+2. A lock note that survives a holder restart, so a returning agent can tell its
+   own stale claim from someone else's.
+3. Event history a restart keeps, if a game ever needs it.

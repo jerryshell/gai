@@ -188,6 +188,9 @@ func test_jump_emits_signal() -> void:
   `stub(player, "take_damage", 0)` and `assert_called(player, "take_damage", [2])`.
   A `Node` double needs `auto_free`. Use `double_scene("res://player.tscn")`
   when the test needs the scene's child nodes.
+- `stub_once(player, "roll", [1, 6])` answers in turn and repeats the last value.
+- A double of a subclass overrides inherited methods, so `double("res://enemy.gd",
+  ["take_damage"])` works when the method lives in the base script.
 - `bin/gai test --isolate-tests --file-timeout 30` bounds one hung test.
 - `bin/gai test --scene-dir res://tests` runs existing `.tscn` test scenes.
 - Do not override `_gai_*` methods. Read `docs/gai/testing.md`.

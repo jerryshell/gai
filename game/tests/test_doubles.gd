@@ -88,3 +88,37 @@ func test_double_collection_defaults() -> void:
 	assert_called(combat, "list", [[1, 2]])
 	assert_eq(combat.dict(), {})
 	assert_called(combat, "dict", [{}])
+
+
+func test_double_inherited_method() -> void:
+	var combat = double("res://tests/fixtures/combat_child.gd", ["take_damage"])
+	assert_not_null(combat, "a subclass double overrides an inherited method")
+	if combat == null:
+		return
+	assert_eq(combat.take_damage(2), 2)
+	assert_called(combat, "take_damage", [2])
+	stub(combat, "take_damage", 42)
+	assert_eq(combat.take_damage(2), 42)
+	assert_false(combat.is_stunned())
+
+
+func test_stub_once_answers_in_turn() -> void:
+	var combat = double("res://tests/fixtures/combat.gd")
+	assert_not_null(combat)
+	if combat == null:
+		return
+	stub_once(combat, "take_damage", [10, 20])
+	assert_eq(combat.take_damage(1), 10)
+	assert_eq(combat.take_damage(1), 20)
+	assert_eq(combat.take_damage(1), 20, "the last value repeats")
+	assert_call_count(combat, "take_damage", 3)
+
+
+func test_stub_once_matches_arguments() -> void:
+	var combat = double("res://tests/fixtures/combat.gd")
+	assert_not_null(combat)
+	if combat == null:
+		return
+	stub_once(combat, "take_damage", [7], [1])
+	assert_eq(combat.take_damage(1), 7)
+	assert_eq(combat.take_damage(2), 2, "another argument list keeps the real answer")
