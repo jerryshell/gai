@@ -177,14 +177,19 @@ func test_damage() -> void:
 - `stub(object, method, value, args)` returns `value` for one argument list, or
   for every call when `args` is null. The list is what the method receives,
   including defaults.
+- `stub_once(object, method, values, args)` answers with each value in turn and
+  keeps returning the last one. That is how a fixed dice, a once-only failure, or
+  a retry gets tested.
 - `assert_called`, `assert_not_called`, `assert_call_count`, and `get_calls`
   inspect the recorded calls. A call records the actual arguments, including
   defaults that the caller omitted.
-- Only GDScript scripts with a path work. Only methods declared in that script
-  are overridden; inherited methods are not. Methods that start with `_`, or
-  that are static, virtual, vararg, or have a non-literal default, are skipped.
-  Pass `methods` to choose; `double_script` records a failure when a requested
-  method cannot be overridden.
+- Only GDScript scripts with a path work. A method declared in the script and a
+  method the script inherits from another GDScript are both overridable, so a
+  double of a subclass can stub what its base declares. Methods that start with
+  `_`, or that are static, virtual, vararg, or have a non-literal default, are
+  skipped. Pass `methods` to choose; `double_script` records a failure when a
+  requested method cannot be overridden. A method inherited from a *native* base
+  class is not overridable.
 - Annotations such as `@rpc` are not copied to the override. Do not double a
   method whose annotation changes engine behavior.
 - A plain object cannot be spied. Double its script and use the instance.

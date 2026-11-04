@@ -303,13 +303,6 @@ SCsub                                         @godotengine/buildsystem
 /bin/gai                                      @jerryshell
 /bin/gai_mcp.py                               @jerryshell
 /docs/gai/                                    @jerryshell
+/game/                                        @jerryshell
 /modules/gai_agent/                           @jerryshell
-/tests/test_agent.py                          @jerryshell
-/tests/test_build.py                          @jerryshell
-/tests/test_check.py                          @jerryshell
-/tests/test_export.py                         @jerryshell
-/tests/test_game_tests.py                     @jerryshell
-/tests/test_init.py                           @jerryshell
-/tests/test_mcp.py                            @jerryshell
-/tests/test_steam.py                          @jerryshell
-/tests/test_upstream.py                       @jerryshell
+/tests/*.py                                   @jerryshell

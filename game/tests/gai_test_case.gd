@@ -25,6 +25,7 @@ var _watchers: Array[Dictionary] = []
 var _signal_counts: Dictionary = {}
 var _double_calls: Dictionary = {}
 var _double_stubs: Dictionary = {}
+var _double_sequences: Dictionary = {}
 var _pressed_actions: Array[StringName] = []
 var _pressed_keys: Array[int] = []
 var _pressed_buttons: Array[int] = []
@@ -134,9 +135,20 @@ func double_script(path: String, methods: Array[String] = []) -> GDScript:
 		source += block + "\n"
 		generated += 1
 	for method_name in methods:
-		if not seen.has(method_name):
+		if seen.has(method_name):
+			continue
+		# A subclass inherits its methods, so a double of the subclass has to
+		# override what the base declares too.
+		var inherited := _inherited_method_info(base_script, method_name)
+		if inherited.is_empty():
 			fail("double_script: %s has no method %s" % [path, method_name])
 			return null
+		var inherited_block := _double_method(inherited)
+		if inherited_block.is_empty():
+			fail("double_script: cannot override inherited %s on %s" % [method_name, path])
+			return null
+		source += inherited_block + "\n"
+		generated += 1
 	if generated == 0:
 		fail("double_script: no methods to override on " + path)
 		return null
@@ -147,6 +159,16 @@ func double_script(path: String, methods: Array[String] = []) -> GDScript:
 		fail("double_script: cannot compile the double for " + path)
 		return null
 	return doubled
+
+
+func _inherited_method_info(script: Script, method_name: String) -> Dictionary:
+	var base := script.get_base_script()
+	while base != null:
+		for info in base.get_script_method_list():
+			if String(info["name"]) == method_name:
+				return info
+		base = base.get_base_script()
+	return {}
 
 
 ## Instantiate a scene and replace its root script with a double. A Node
@@ -203,6 +225,22 @@ func stub(object: Object, method_name: StringName, value: Variant, args: Variant
 		_double_stubs[key] = {}
 	var stubs: Dictionary = _double_stubs[key]
 	stubs["" if args == null else var_to_str(args)] = value
+
+
+## Answer a doubled method with each value in [param values] in turn, then keep
+## returning the last one. Pass [param args] to match one argument list.
+func stub_once(object: Object, method_name: StringName, values: Array, args: Variant = null) -> void:
+	if values.is_empty():
+		fail("stub_once: values is empty")
+		return
+	if object == null:
+		fail("stub_once: object is null")
+		return
+	var key := _double_key(object, method_name)
+	if not _double_sequences.has(key):
+		_double_sequences[key] = {}
+	var sequences: Dictionary = _double_sequences[key]
+	sequences["" if args == null else var_to_str(args)] = values.duplicate()
 
 
 ## Every recorded argument list for one method, in call order.
@@ -270,6 +308,9 @@ func _gai_double_record(object: Object, method_name: StringName, args: Array) ->
 
 func _gai_double_stub(object: Object, method_name: StringName, args: Array) -> Dictionary:
 	var key := _double_key(object, method_name)
+	var sequence := _next_sequence(key, args)
+	if not sequence.is_empty():
+		return sequence
 	if not _double_stubs.has(key):
 		return {"stubbed": false}
 	var stubs: Dictionary = _double_stubs[key]
@@ -279,6 +320,28 @@ func _gai_double_stub(object: Object, method_name: StringName, args: Array) -> D
 	if stubs.has(""):
 		return {"stubbed": true, "value": stubs[""]}
 	return {"stubbed": false}
+
+
+func _next_sequence(key: String, args: Array) -> Dictionary:
+	if not _double_sequences.has(key):
+		return {}
+	var sequences: Dictionary = _double_sequences[key]
+	var exact := var_to_str(args)
+	var slot := ""
+	if sequences.has(exact):
+		slot = exact
+	elif sequences.has(""):
+		slot = ""
+	else:
+		return {}
+	var queue: Array = sequences[slot]
+	if queue.is_empty():
+		return {}
+	var value: Variant = queue.pop_front()
+	# Keep the last value answerable, the way a one-shot stub usually is.
+	if queue.is_empty():
+		sequences[slot] = [value]
+	return {"stubbed": true, "value": value}
 
 
 func _call_count(object: Object, method_name: StringName, args: Variant) -> int:
