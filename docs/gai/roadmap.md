@@ -172,10 +172,29 @@ engine source.
 - Upstream merge conflicts per release, measured after 4.8 stable.
 - Agent tasks completed without a human GUI.
 
+## Dogfooding, 2026-11-04
+
+Ran against `~/nova-survivors-gai`: 147 scripts, 15 autoloads, 94 `class_name`s.
+
+| Step | Result |
+| --- | --- |
+| `doctor`, `check` | ok, 15 autoloads, main scene by `uid://` |
+| `test --scene-dir res://tests` | 35 scene tests, 145 s |
+| `lint` | 147 scripts, 0 problems |
+| `export linux` | 190.4 MiB, Steam runtime copied, starts headless |
+| `script.classes` | 94 classes, all from the import cache |
+| `script.class` | `AbilityBase` with doc and method list |
+| lock on `/root/MainMenu` | holder writes, a guest gets `-32004`, audit holds one line per call |
+| `check --script` | 7.9 s for one script, against 90 s for the full check |
+
+Found and fixed: `next` sent every script edit in an external project to the full
+check, because the rule table only knew the bundled `game/` prefix.
+
+Still theirs to do: scene tests in that project's own CI.
+
 ## Next three tasks
 
-1. Dogfood the new path on nova-survivors-gai: scene tests in CI, native export,
-   and template rebuild after engine changes. Needs that project to be present.
-2. A lock note that survives a holder restart, so a returning agent can tell its
-   own stale claim from someone else's.
-3. Event history a restart keeps, if a game ever needs it.
+1. A per-request deadline or task protocol, if a game needs a bridge call longer
+   than the batch budget. `decisions/0004` holds the design constraints.
+2. Event history a restart keeps, if a game needs replay across a restart.
+3. Producing template builds in CI, so an agent never waits for one locally.
